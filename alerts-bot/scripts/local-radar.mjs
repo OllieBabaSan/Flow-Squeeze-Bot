@@ -38,8 +38,9 @@ let xRegistry = [];
 let xInbox = [];
 let newsScanTail = Promise.resolve();
 let xDispatchTimer = null;
-const intervalMs = Math.max(15, Number(process.env.PRESSURE_POLL_SECONDS || 30)) * 1000;
-const slowIntervalMs = Math.max(30, Number(process.env.RADAR_POLL_SECONDS || 60)) * 1000;
+let intervalMs;
+let slowIntervalMs;
+let flowIntervalMs;
 
 function selectedForEditorialShadow(id, sampleRate) {
   if (!id || sampleRate <= 0) return false;
@@ -544,9 +545,12 @@ async function scanPressure() {
 }
 
 async function scanFlow() {
+  const scanStartedAt = Date.now();
   const now = Date.now();
   const state = await loadFlowState();
-  const perpDexCatalogsPromise = refreshPerpDexCatalogs({ now }).catch(() => []);
+  // Refresh secondary venue metadata in the background. It is useful context,
+  // but it must never delay an otherwise fully validated Discord alert.
+  void refreshPerpDexCatalogs({ now }).catch(() => []);
   const venueRequests = [
     ['Bybit', async () => {
       const response = await fetch('https://api.bybit.com/v5/market/tickers?category=linear', { signal: AbortSignal.timeout(12000) });
@@ -680,6 +684,7 @@ async function scanFlow() {
     const recentlyAlerted = state.symbolAlerted[current.symbol] && now - state.symbolAlerted[current.symbol] < 12 * 3600_000;
     const recentlyShadowed = state.shadowAlerted[marketKey] && now - state.shadowAlerted[marketKey] < 12 * 3600_000;
     if (detection.eligible && (current.shadow ? !recentlyShadowed : !recentlyAlerted)) {
+      const candidateStartedAt = Date.now();
       const tokenIdentity = await resolveTrackedToken(current.symbol, { referencePrice: current.price });
       if (!tokenIdentity) {
         if (current.shadow) state.shadowAlerted[marketKey] = now;
@@ -710,13 +715,18 @@ async function scanFlow() {
         const alertId = `flow:${marketKey}:${now}`;
         await ledger.reserve({ id: alertId, kind: 'flow', symbol: current.symbol, direction: detection.direction, entryPrice: current.price, entryOpenInterest: current.openInterest, entryAt: new Date(now).toISOString(), quoteKey: marketKey, venue: current.venue, trigger: detection });
         try {
-          const perpDexVenues = findPerpDexVenues(current.symbol, markets, await perpDexCatalogsPromise, current.price);
+          // Use the already observed Hyperliquid market plus any cached venue
+          // catalogs. A background refresh will improve later alerts without
+          // placing network latency in front of this delivery.
+          const perpDexVenues = findPerpDexVenues(current.symbol, markets, undefined, current.price);
+          const deliveryStartedAt = Date.now();
           await sendFlowDiscord(current, detection, tokenIdentity, perpDexVenues);
           await ledger.delivery(alertId, 'sent');
           const tracking = createFlowTrackingPosition({ id: alertId, market: current, detection, tokenIdentity, now });
           if (tracking.kind === 'SQUEEZE_PRESSURE') state.flowTracking[alertId] = tracking;
           await recordFlowAlert({ ...current, tokenIdentity }, detection);
           alerts += 1;
+          await log(`flow delivery_timing symbol=${current.symbol} venue=${current.venue} candidateToDiscordMs=${Date.now() - candidateStartedAt} discordMs=${Date.now() - deliveryStartedAt} scanAgeMs=${Date.now() - scanStartedAt}`);
         } catch (error) {
           await ledger.delivery(alertId, 'uncertain', { error: error instanceof Error ? error.message : String(error) });
           await log(`flow delivery_uncertain_reserved symbol=${current.symbol} venue=${current.venue} error=${error instanceof Error ? error.message : String(error)}`);
@@ -739,7 +749,7 @@ async function scanFlow() {
   await saveFlowState(state);
   await ledger.observe('flow', liveQuotes, now);
   const venueSummary = venueRequests.map(([name], index) => `${name}=${outcomes[index].status === 'fulfilled' ? outcomes[index].value.length : 'offline'}`).join(' ');
-  await log(`flow markets=${markets.length} ${venueSummary} alerts=${alerts} pressureShadow=${pressureCandidates}${failures.length ? ` failures=${failures.join('|')}` : ''}${dryRun ? ' dry-run' : ''}`);
+  await log(`flow markets=${markets.length} ${venueSummary} alerts=${alerts} pressureShadow=${pressureCandidates} durationMs=${Date.now() - scanStartedAt}${failures.length ? ` failures=${failures.join('|')}` : ''}${dryRun ? ' dry-run' : ''}`);
 }
 
 async function scan({ includePublishers = true } = {}) {
@@ -923,21 +933,30 @@ async function scan({ includePublishers = true } = {}) {
 
 if (!(await acquireInstanceLock())) process.exit(0);
 await loadEnvironment();
+intervalMs = Math.max(15, Number(process.env.PRESSURE_POLL_SECONDS || 30)) * 1000;
+slowIntervalMs = Math.max(30, Number(process.env.RADAR_POLL_SECONDS || 60)) * 1000;
+// Flow uses an independent clock so news collection cannot make a validated
+// market alert wait. The detector itself requires at least 20 seconds between
+// observations, so keep that as the safe lower bound.
+flowIntervalMs = Math.max(20, Number(process.env.FLOW_POLL_SECONDS || 30)) * 1000;
 await loadTokenCatalog();
 await initializePressureState();
 await startXPrimaryIngestion();
 let nextSlowScanAt = 0;
+let nextFlowScanAt = 0;
 do {
   const cycleStartedAt = Date.now();
   const slowCycle = once || cycleStartedAt >= nextSlowScanAt;
+  const flowCycle = once || cycleStartedAt >= nextFlowScanAt;
   const flowEnabled = String(process.env.FLOW_SQUEEZE_ENABLED || 'true').toLowerCase() !== 'false';
   const newsEnabled = String(process.env.NEWS_ALERTS_ENABLED || 'true').toLowerCase() !== 'false';
   const tasks = [scanPressure()];
   if (newsEnabled) tasks.push(scheduleNewsScan({ includePublishers: slowCycle }));
-  if (slowCycle && flowEnabled) {
+  if (flowCycle && flowEnabled) {
     tasks.push(scanFlow());
-    nextSlowScanAt = cycleStartedAt + slowIntervalMs;
+    nextFlowScanAt = cycleStartedAt + flowIntervalMs;
   }
+  if (slowCycle) nextSlowScanAt = cycleStartedAt + slowIntervalMs;
   const results = await Promise.allSettled(tasks);
   for (const result of results) if (result.status === 'rejected') await log(`ERROR ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
   if (once) break;
