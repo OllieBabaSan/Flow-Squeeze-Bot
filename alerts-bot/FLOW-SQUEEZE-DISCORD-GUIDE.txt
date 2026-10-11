@@ -1,0 +1,148 @@
+FLOW/SQUEEZE BOT — INSTALLATION GUIDE
+Message 1 of 8: What this is
+The Flow/Squeeze Bot is an alerting and research system. It monitors public perpetual-futures market data and posts qualifying Flow and Squeeze alerts to Discord.
+It does NOT:
+- Connect to an exchange account
+- Hold wallet keys or seed phrases
+- Place trades
+- Manage positions
+Requirements:
+- Windows 10 or Windows 11
+- Node.js 22.13 or newer
+- Internet access
+- A Discord webhook for the destination channel
+- A computer that remains powered on, awake, signed in, and online
+You do not need Codex, ChatGPT Desktop, an exchange login, trading API keys, wallet access, or an OpenAI API key.
+The project owner will provide a ZIP containing the complete bot. Treat any Discord webhook or optional API key as private.
+--- MESSAGE BREAK ---
+FLOW/SQUEEZE BOT — INSTALLATION GUIDE
+Message 2 of 8: Install and extract
+1. Install the current Node.js LTS release from:
+https://nodejs.org/en/download
+2. Use the normal installer defaults and keep “Add to PATH” enabled.
+3. Open a new PowerShell window and verify:
+node --version
+npm --version
+Node must report v22.13.0 or newer.
+4. Download the ZIP supplied by the project owner.
+5. Right-click the ZIP and select “Extract All.” Extract it to a permanent location such as:
+C:\FlowSqueezeBot
+Do not run it from inside the ZIP or from a temporary folder.
+6. Confirm package.json is directly inside the chosen folder.
+7. Open that folder in File Explorer, click the address bar, type powershell, and press Enter.
+8. Install the dependencies:
+npm ci
+If package-lock.json is missing, use npm install and notify the person who supplied the package.
+--- MESSAGE BREAK ---
+FLOW/SQUEEZE BOT — INSTALLATION GUIDE
+Message 3 of 8: Create the Discord webhook
+In Discord:
+1. Create or choose the channel that should receive alerts.
+2. Open Edit Channel > Integrations > Webhooks.
+3. Select New Webhook.
+4. Give it a recognizable name and choose the channel.
+5. Select Copy Webhook URL.
+Treat the webhook URL like a password. Anyone who has it can post through the webhook. Never place it in a public message, screenshot, source file, or support ticket.
+Optional notification role:
+1. Create or choose an opt-in alert role.
+2. Enable Developer Mode in Discord under User Settings > Advanced.
+3. Right-click the role and choose Copy Role ID.
+4. Confirm the webhook is permitted to mention that role.
+The role ID is a long number. It is optional. Do not substitute a role name, channel ID, or user ID.
+--- MESSAGE BREAK ---
+FLOW/SQUEEZE BOT — INSTALLATION GUIDE
+Message 4 of 8: Configure the bot
+In PowerShell, from the bot folder, run:
+Copy-Item -LiteralPath '.env.example' -Destination '.env.local'
+notepad .env.local
+Set these values for a standalone Flow/Squeeze installation:
+DISCORD_WEBHOOK_URL=PASTE_YOUR_PRIVATE_WEBHOOK_HERE
+DISCORD_ALERT_ROLE_ID=
+FLOW_SQUEEZE_ENABLED=true
+NEWS_ALERTS_ENABLED=false
+DIRECTIONAL_PRESSURE_ENABLED=false
+X_PRIMARY_ENABLED=false
+EDITORIAL_GATE_ENABLED=false
+If you want role mentions, put the numeric role ID after DISCORD_ALERT_ROLE_ID=.
+Leave unrelated provider keys empty.
+Optional: add COINMARKETCAP_API_KEY for additional cross-market liquidation evidence. The bot still works without it and can confirm squeezes from falling venue open interest.
+Save .env.local and close Notepad. Never send this configured file to anyone else.
+--- MESSAGE BREAK ---
+FLOW/SQUEEZE BOT — INSTALLATION GUIDE
+Message 5 of 8: Test and install
+Run all automated tests:
+npm test
+Then run one safe live-data scan:
+npm run radar:dry-run
+The dry run reads current market data but does not publish Discord alerts.
+For a visible foreground session, run:
+npm run radar
+Leave PowerShell open. Press Ctrl+C to stop it.
+For normal hidden background operation, run:
+powershell -ExecutionPolicy Bypass -File scripts\install-alertsbot-task.ps1
+This creates and starts the Windows scheduled task CryptoAlertsMonitor. It starts at Windows sign-in, runs without a visible console, and restarts the Node monitor after an unexpected exit.
+Do not create a second Startup shortcut or repeating scheduled task. The bot has a single-instance lock, but duplicate launch mechanisms should still be avoided.
+--- MESSAGE BREAK ---
+FLOW/SQUEEZE BOT — INSTALLATION GUIDE
+Message 6 of 8: Verify and control it
+Check the scheduled task:
+Get-ScheduledTask -TaskName 'CryptoAlertsMonitor' | Select-Object TaskName, State
+View recent activity:
+Get-Content -LiteralPath 'data\local-radar.log' -Tail 30
+Follow the log continuously:
+Get-Content -LiteralPath 'data\local-radar.log' -Tail 20 -Wait
+A healthy scan contains something similar to:
+flow markets=... Bybit=... Hyperliquid=... alerts=0
+alerts=0 normally means no market met the alert rules. It does not mean the bot failed.
+Stop:
+Stop-ScheduledTask -TaskName 'CryptoAlertsMonitor'
+Start:
+Start-ScheduledTask -TaskName 'CryptoAlertsMonitor'
+Completely remove automatic startup:
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-alertsbot-task.ps1
+Uninstalling the task does not delete the program, configuration, logs, or history.
+--- MESSAGE BREAK ---
+FLOW/SQUEEZE BOT — INSTALLATION GUIDE
+Message 7 of 8: Understand the alerts
+EARLY FLOW · BULLISH
+Price, turnover, and new positioning indicate bullish directional flow.
+EARLY FLOW · BEARISH
+Price, turnover, and new positioning indicate bearish directional flow.
+EARLY SQUEEZE PRESSURE · BULLISH
+Shorts appear crowded and price has begun moving against them. This is not yet a confirmed squeeze.
+EARLY SQUEEZE PRESSURE · BEARISH
+Longs appear crowded and price has begun moving against them. This is not yet a confirmed squeeze.
+SQUEEZE CONFIRMED
+Price continued against the crowded side and open interest contracted or aligned liquidation evidence appeared.
+SQUEEZE PRESSURE INVALIDATED
+Price moved materially against the proposed squeeze direction before confirmation.
+SQUEEZE NOT CONFIRMED
+The two-hour pressure window expired without enough covering or liquidation evidence.
+SQUEEZE EXHAUSTION
+A confirmed squeeze materially surrendered its best move.
+SQUEEZE TRACKING ENDED
+The six-hour follow-up window ended without claiming squeeze conditions remained active.
+Alerts describe market evidence. They are not trade instructions or promised outcomes.
+--- MESSAGE BREAK ---
+FLOW/SQUEEZE BOT — INSTALLATION GUIDE
+Message 8 of 8: Troubleshooting and security
+No messages:
+Check data\local-radar.log. Healthy scans with alerts=0 simply mean no qualifying signal occurred.
+Webhook error:
+- “DISCORD_WEBHOOK_URL is not configured”: correct .env.local and restart.
+- Discord HTTP 401 or 404: replace the deleted or invalid webhook.
+- No role mention: verify the numeric role ID and mention permissions.
+No market data:
+Allow HTTPS access to:
+- api.bybit.com
+- api.hyperliquid.xyz
+- api.coingecko.com
+- discord.com
+VPNs, corporate firewalls, DNS filters, regional restrictions, and antivirus HTTPS inspection may block providers.
+The task runs while the configured Windows user is signed in. Prevent the computer from sleeping. Re-run the installer if the project folder is moved or renamed.
+Security rules:
+- Never provide exchange passwords, trading keys, wallet seed phrases, or private keys.
+- Never share .env.local.
+- Revoke an exposed Discord webhook immediately.
+- This bot does not place trades. Automated execution requires a separate security and risk-control design.
+END OF GUIDE

@@ -1,0 +1,12 @@
+**/node_modules/
+**/data/
+**/.env*
+!**/.env.example
+**/.next/
+**/.vinext/
+**/dist/
+**/tmp/
+**/work/
+**/outputs/
+**/*.log
+*.zip

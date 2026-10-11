@@ -1,0 +1,14 @@
+{
+  "name": "flow-squeeze-hyperliquid-paper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "start": "node scripts/run-paper.mjs",
+    "once": "node scripts/run-paper.mjs --once",
+    "test": "node --test",
+    "report": "node scripts/report.mjs"
+    ,"historical-screen": "node scripts/historical-screen.mjs"
+  }
+}
