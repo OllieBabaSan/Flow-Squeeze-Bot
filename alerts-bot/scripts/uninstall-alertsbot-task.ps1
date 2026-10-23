@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$taskName = 'CryptoAlertsMonitor'
+$taskName = 'FlowSqueezeAlertsMonitor'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 Remove-ItemProperty -Path $runKey -Name 'CryptoNewsRadarLocal' -ErrorAction SilentlyContinue
 

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$taskName = 'CryptoAlertsMonitor'
+$taskName = 'FlowSqueezeAlertsMonitor'
 $projectDir = Split-Path -Parent $PSScriptRoot
 $hiddenLauncherPath = Join-Path $PSScriptRoot 'run-alertsbot-hidden.vbs'
 $commandPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
@@ -45,7 +45,7 @@ $settings = New-ScheduledTaskSettingsSet `
 
 $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
 $task = New-ScheduledTask -Action $action -Trigger $logonTrigger -Settings $settings -Principal $principal `
-  -Description 'Silent independent AlertsBot and PressureBot monitor. Starts at Windows sign-in and restarts after failure.'
+  -Description 'Standalone Flow/Squeeze market-alert monitor. Starts at Windows sign-in and restarts after failure.'
 
 Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
