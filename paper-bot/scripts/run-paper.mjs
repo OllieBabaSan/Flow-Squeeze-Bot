@@ -3,19 +3,33 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachBook, fetchMarkets } from '../src/hyperliquid.mjs';
 import { closeAccounting, evaluateCandidate, evaluateExit, signalKind, simulatedFill, sizePosition } from '../src/strategy.mjs';
+import { evaluateShadowExitRules } from '../src/shadow-exits.mjs';
+import { evaluateStrengthShadowRules, partialExitAccounting } from '../src/strength-shadows.mjs';
 import { appendJsonl, readJson, readNewLines, writeJson } from '../src/storage.mjs';
+import { normalizeFlowSignal } from '../src/signal-contract.mjs';
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const config = JSON.parse(await readFile(resolve(projectDir, 'config.json'), 'utf8'));
-const signalPath = resolve(projectDir, config.signalFile);
-const statePath = resolve(projectDir, 'data', 'state.json');
-const eventPath = resolve(projectDir, 'data', 'events.jsonl');
-const lockPath = resolve(projectDir, 'data', 'paper-bot.lock');
+const argumentValue = name => {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : null;
+};
+const config = JSON.parse(await readFile(resolve(projectDir, argumentValue('--config') || 'config.json'), 'utf8'));
+// The automation intentionally consumes Flow/Squeeze Alerts, but it must not
+// depend on a particular sibling-directory layout. Operators can point it at
+// any installed parent signal stream with FLOW_SIGNAL_FILE or --signal-file.
+const configuredSignalFile = argumentValue('--signal-file') || process.env.FLOW_SIGNAL_FILE || config.signalFile;
+if (!configuredSignalFile) throw new Error('Flow signal input is required. Set FLOW_SIGNAL_FILE, pass --signal-file, or configure signalFile.');
+const signalPath = resolve(projectDir, configuredSignalFile);
+const dataDir = resolve(projectDir, argumentValue('--data-dir') || 'data');
+const statePath = resolve(dataDir, 'state.json');
+const eventPath = resolve(dataDir, 'events.jsonl');
+const lockPath = resolve(dataDir, 'paper-bot.lock');
 const once = process.argv.includes('--once');
 const state = await readJson(statePath, {
   startedAt: new Date().toISOString(), equityUsd: config.initialEquityUsd, peakEquityUsd: config.initialEquityUsd,
   signalOffset: null, candidates: {}, positions: {}, seenSignals: {}, day: null, dayStartEquityUsd: config.initialEquityUsd,
   rejectedObservations: {},
+  postExitObservations: {},
   totals: { signals: 0, entries: 0, exits: 0, rejected: 0, wins: 0, losses: 0, feesUsd: 0 },
 });
 
@@ -47,10 +61,6 @@ async function record(type, details = {}) {
   console.log(JSON.stringify(event));
 }
 
-function signalId(row) {
-  return `${row.alertedAt}:${row.market?.venue}:${row.market?.symbol}:${row.detection?.direction}`;
-}
-
 async function ingestSignals(now) {
   if (state.signalOffset == null) {
     try { state.signalOffset = (await stat(signalPath)).size; }
@@ -63,11 +73,18 @@ async function ingestSignals(now) {
   for (const line of update.lines) {
     let row;
     try { row = JSON.parse(line); } catch { await record('SIGNAL_REJECTED', { reason: 'MALFORMED_SIGNAL_RECORD' }); continue; }
-    const id = signalId(row);
+    if (Array.isArray(config.allowedSourceVenues) && !config.allowedSourceVenues.includes(row.market?.venue)) continue;
+    const contract = normalizeFlowSignal(row, now);
+    if (!contract.valid) {
+      state.totals.rejected += 1;
+      await record('SIGNAL_REJECTED', { reason: contract.reason, schemaVersion: contract.schemaVersion });
+      continue;
+    }
+    const id = contract.signalId;
     if (state.seenSignals[id]) continue;
     state.seenSignals[id] = now;
     state.totals.signals += 1;
-    const alertedAtMs = Date.parse(row.alertedAt);
+    const alertedAtMs = contract.createdAtMs;
     if (!row.detection?.eligible || !['BULLISH', 'BEARISH'].includes(row.detection.direction) || !(alertedAtMs > 0) || !(Number(row.market?.price) > 0)) {
       state.totals.rejected += 1;
       await record('SIGNAL_REJECTED', { signalId: id, symbol: row.market?.symbol, reason: 'INVALID_SIGNAL' });
@@ -78,7 +95,15 @@ async function ingestSignals(now) {
       reason: row.detection.reason, alertedAtMs, alertPrice: Number(row.market.price),
       alertOpenInterest: Number(row.market.openInterest), sourceVenue: row.market.venue, stage: 'NEW',
     };
-    await record('SIGNAL_RECEIVED', { signalId: id, symbol: row.market.symbol, direction: row.detection.direction, kind: signalKind(row.detection.reason), sourceVenue: row.market.venue });
+    await record('SIGNAL_RECEIVED', {
+      signalId: id, symbol: row.market.symbol, direction: row.detection.direction,
+      kind: signalKind(row.detection.reason), sourceVenue: row.market.venue,
+      schemaVersion: contract.schemaVersion, detectorVersion: contract.detectorVersion,
+      publicationStatus: contract.publicationStatus, signalCreatedAt: contract.createdAt,
+      signalRecordedAt: contract.recordedAt, receiptLagMs: contract.receiptLagMs,
+      producerRecordingLagMs: contract.producerRecordingLagMs,
+      fileToConsumerLagMs: contract.fileToConsumerLagMs,
+    });
   }
 }
 
@@ -114,6 +139,7 @@ async function enter(candidate, market, decision, now) {
   state.totals.feesUsd += entryFeeUsd;
   state.positions[candidate.id] = {
     ...candidate, ...sizing, entryPrice, entryFeeUsd, enteredAtMs: now, peakProgressPct: 0, maxAdverseProgressPct: 0,
+    lastPositionObservationAtMs: now,
     confirmation: decision.metrics, marketSnapshot: { bid: market.bid, ask: market.ask, mid: market.mid, openInterest: market.openInterest, volume24hUsd: market.volume24hUsd },
   };
   delete state.candidates[candidate.id];
@@ -129,6 +155,40 @@ async function close(position, market, decision, now) {
   state.totals.exits += 1;
   if (accounting.netPnlUsd > 0) state.totals.wins += 1; else state.totals.losses += 1;
   delete state.positions[position.id];
+  for (const shadow of Object.values(position.shadowExitTriggers || {})) {
+    await record('COUNTERFACTUAL_EXIT_OUTCOME', {
+      signalId: position.id, symbol: position.symbol, direction: position.direction, kind: position.kind,
+      rule: shadow.rule, triggeredAt: shadow.triggeredAt, triggerHeldMinutes: shadow.heldMinutes,
+      triggerProgressPct: shadow.progressPct, triggerPeakProgressPct: shadow.peakProgressPct,
+      shadowExitPrice: shadow.exitPrice, shadowNetPnlUsd: shadow.netPnlUsd,
+      actualExitReason: decision.reason, actualNetPnlUsd: accounting.netPnlUsd,
+      savingsUsd: shadow.netPnlUsd - accounting.netPnlUsd,
+      cutActualWinner: accounting.netPnlUsd > 0 && shadow.netPnlUsd < accounting.netPnlUsd,
+    });
+  }
+  for (const shadow of Object.values(position.strengthShadowTriggers || {})) {
+    const shadowAccounting = shadow.model === 'PARTIAL_EXIT'
+      ? partialExitAccounting(position, shadow.exitPrice, decision.exitPrice, shadow.fraction, config)
+      : shadow.accounting;
+    await record('STRENGTH_SHADOW_OUTCOME', {
+      signalId: position.id, symbol: position.symbol, direction: position.direction, kind: position.kind,
+      rule: shadow.rule, model: shadow.model, triggeredAt: shadow.triggeredAt,
+      triggerHeldMinutes: shadow.heldMinutes, triggerProgressPct: shadow.progressPct,
+      triggerPeakProgressPct: shadow.peakProgressPct, shadowExitPrice: shadow.exitPrice,
+      shadowNetPnlUsd: shadowAccounting.netPnlUsd, actualExitReason: decision.reason,
+      actualNetPnlUsd: accounting.netPnlUsd, improvementUsd: shadowAccounting.netPnlUsd - accounting.netPnlUsd,
+      improvedActualOutcome: shadowAccounting.netPnlUsd > accounting.netPnlUsd,
+    });
+  }
+  if (accounting.netPnlUsd > 0 && ['TRAILING_STOP', 'TARGET_REACHED'].includes(decision.reason)) {
+    state.postExitObservations ||= {};
+    state.postExitObservations[position.id] = {
+      id: position.id, symbol: position.symbol, direction: position.direction, kind: position.kind,
+      entryPrice: position.entryPrice, entryFeeUsd: position.entryFeeUsd, quantity: position.quantity,
+      exitedAtMs: now, actualExitPrice: decision.exitPrice, actualExitReason: decision.reason,
+      actualNetPnlUsd: accounting.netPnlUsd, completedHorizons: [],
+    };
+  }
   await record('PAPER_EXIT', {
     signalId: position.id, symbol: position.symbol, direction: position.direction, kind: position.kind,
     entryPrice: position.entryPrice, exitPrice: decision.exitPrice, reason: decision.reason,
@@ -145,7 +205,8 @@ async function cycle() {
   await ingestSignals(now);
   const catalog = await fetchMarkets();
   state.rejectedObservations ||= {};
-  const requiredSymbols = new Set([...Object.values(state.candidates), ...Object.values(state.positions), ...Object.values(state.rejectedObservations)].map(item => item.symbol));
+  state.postExitObservations ||= {};
+  const requiredSymbols = new Set([...Object.values(state.candidates), ...Object.values(state.positions), ...Object.values(state.rejectedObservations), ...Object.values(state.postExitObservations)].map(item => item.symbol));
   const books = new Map();
   await Promise.all([...requiredSymbols].map(async symbol => {
     const market = catalog.get(symbol);
@@ -174,7 +235,48 @@ async function cycle() {
     position.maxAdverseProgressPct = decision.maxAdverseProgressPct;
     position.lastPrice = market.mid;
     position.lastObservedAtMs = now;
+    position.shadowExitTriggers ||= {};
+    for (const trigger of evaluateShadowExitRules(position, decision, now, config)) {
+      if (position.shadowExitTriggers[trigger.rule]) continue;
+      const shadowAccounting = closeAccounting(position, decision.exitPrice, config);
+      position.shadowExitTriggers[trigger.rule] = {
+        rule: trigger.rule, triggeredAt: new Date(now).toISOString(), exitPrice: decision.exitPrice,
+        ...trigger.metrics, ...shadowAccounting,
+      };
+      await record('COUNTERFACTUAL_EXIT_TRIGGER', {
+        signalId: position.id, symbol: position.symbol, direction: position.direction, kind: position.kind,
+        rule: trigger.rule, exitPrice: decision.exitPrice, ...trigger.metrics, ...shadowAccounting,
+      });
+    }
+    position.strengthShadowTriggers ||= {};
+    for (const trigger of evaluateStrengthShadowRules(position, decision, config)) {
+      if (position.strengthShadowTriggers[trigger.rule]) continue;
+      const shadowAccounting = trigger.model === 'FULL_EXIT' ? closeAccounting(position, decision.exitPrice, config) : null;
+      position.strengthShadowTriggers[trigger.rule] = {
+        rule: trigger.rule, model: trigger.model, fraction: trigger.fraction || null,
+        triggeredAt: new Date(now).toISOString(), exitPrice: decision.exitPrice,
+        heldMinutes: (now - position.enteredAtMs) / 60000, progressPct: decision.progressPct,
+        peakProgressPct: decision.peakProgressPct, accounting: shadowAccounting,
+      };
+      await record('STRENGTH_SHADOW_TRIGGER', {
+        signalId: position.id, symbol: position.symbol, direction: position.direction, kind: position.kind,
+        rule: trigger.rule, model: trigger.model, fraction: trigger.fraction || null,
+        exitPrice: decision.exitPrice, heldMinutes: (now - position.enteredAtMs) / 60000,
+        progressPct: decision.progressPct, peakProgressPct: decision.peakProgressPct,
+        shadowNetPnlUsd: shadowAccounting?.netPnlUsd ?? null,
+      });
+    }
     if (decision.exit) await close(position, market, decision, now);
+    else if (now - Number(position.lastPositionObservationAtMs || position.enteredAtMs) >= Number(config.positionObservationSeconds || 60) * 1000) {
+      position.lastPositionObservationAtMs = now;
+      await record('POSITION_OBSERVATION', {
+        signalId: position.id, symbol: position.symbol, direction: position.direction, kind: position.kind,
+        heldMinutes: (now - position.enteredAtMs) / 60000, progressPct: decision.progressPct,
+        peakProgressPct: decision.peakProgressPct, maxAdverseProgressPct: decision.maxAdverseProgressPct,
+        mid: market.mid, bid: market.bid, ask: market.ask, spreadBps: ((market.ask - market.bid) / market.mid) * 10000,
+        openInterest: market.openInterest, volume24hUsd: market.volume24hUsd,
+      });
+    }
   }
   const rejectionHorizons = [5, 15, 30, 60, 240];
   for (const observation of Object.values({ ...state.rejectedObservations })) {
@@ -190,6 +292,26 @@ async function cycle() {
       await record('REJECTED_OUTCOME', { signalId: observation.id, symbol: observation.symbol, direction: observation.direction, kind: observation.kind, rejectionReason: observation.reason, horizonMinutes: horizon, directedReturnPct: progressPct, maxFavorablePct: observation.maxFavorablePct, maxAdversePct: observation.maxAdversePct });
     }
     if (observation.horizons[240]) delete state.rejectedObservations[observation.id];
+  }
+  for (const observation of Object.values({ ...state.postExitObservations })) {
+    const market = books.get(observation.symbol) || catalog.get(observation.symbol);
+    if (!market?.bid || !market?.ask) continue;
+    const elapsedMinutes = (now - observation.exitedAtMs) / 60000;
+    for (const horizon of config.strengthShadowRules?.postExitHorizonsMinutes || []) {
+      if (elapsedMinutes < horizon || observation.completedHorizons.includes(horizon)) continue;
+      const hypotheticalExitPrice = simulatedFill(market, observation.direction, 'EXIT', config);
+      const hypothetical = closeAccounting(observation, hypotheticalExitPrice, config);
+      observation.completedHorizons.push(horizon);
+      await record('WINNER_POST_EXIT_OUTCOME', {
+        signalId: observation.id, symbol: observation.symbol, direction: observation.direction,
+        actualExitReason: observation.actualExitReason, horizonMinutes: horizon,
+        actualExitPrice: observation.actualExitPrice, hypotheticalExitPrice,
+        actualNetPnlUsd: observation.actualNetPnlUsd, hypotheticalNetPnlUsd: hypothetical.netPnlUsd,
+        improvementUsd: hypothetical.netPnlUsd - observation.actualNetPnlUsd,
+      });
+    }
+    const horizons = config.strengthShadowRules?.postExitHorizonsMinutes || [];
+    if (horizons.length && observation.completedHorizons.length === horizons.length) delete state.postExitObservations[observation.id];
   }
   const retention = now - 14 * 86400_000;
   state.seenSignals = Object.fromEntries(Object.entries(state.seenSignals).filter(([, at]) => at >= retention));

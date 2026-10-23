@@ -15,7 +15,7 @@ Crypto Alerts Flow/Squeeze event
 → append-only decision and outcome records
 ```
 
-The bot tails `../crypto-news-radar/data/flow-alert-history.jsonl`. On its first start it records the current end of that file and begins prospectively with the next alert; it does not pretend old alerts were available in real time.
+The bot tails the Flow/Squeeze Alerts versioned signal stream. Set `FLOW_SIGNAL_FILE` to the parent's absolute `flow-alert-history.jsonl` path, pass `--signal-file`, or use the bundled sibling-relative `signalFile` configuration. On its first start it records the current end of that file and begins prospectively with the next alert; it does not pretend old alerts were available in real time.
 
 Only assets in Hyperliquid's current primary perpetual universe are eligible. The service uses Hyperliquid's public `metaAndAssetCtxs` and `l2Book` info requests. No exchange account is queried.
 
