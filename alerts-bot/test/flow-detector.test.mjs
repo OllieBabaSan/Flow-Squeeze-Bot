@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectFlowIgnition, isFlowPriceCandidate, normalizeBybitMarkets, normalizeHyperliquidMarkets, normalizeKrakenMarkets } from '../lib/flow-detector.mjs';
+import { detectFlowIgnition, isFlowPriceCandidate, normalizeBinanceMarkets, normalizeBitgetMarkets, normalizeBybitMarkets, normalizeHyperliquidMarkets, normalizeKrakenMarkets, normalizeOkxMarkets } from '../lib/flow-detector.mjs';
 
 const now = Date.now();
 const prior = { price: 0.005, turnover24h: 10_000_000, openInterest: 20_000_000, fundingRate: 0, observedAt: now - 60_000 };
@@ -88,6 +88,43 @@ test('normalizes Bybit USDT perpetual markets', () => {
   assert.equal(markets.length, 1);
   assert.equal(markets[0].symbol, 'HYPE');
   assert.equal(markets[0].venue, 'Bybit');
+});
+
+test('normalizes Binance USDT perpetual markets for shadow evaluation', () => {
+  const markets = normalizeBinanceMarkets({
+    symbols: [{ symbol: 'HYPEUSDT', contractType: 'PERPETUAL', quoteAsset: 'USDT', status: 'TRADING' }],
+    tickers: [{ symbol: 'HYPEUSDT', lastPrice: '50', quoteVolume: '20000000' }],
+    premiums: [{ symbol: 'HYPEUSDT', markPrice: '50.1', lastFundingRate: '-0.0006' }],
+    openInterests: [{ symbol: 'HYPEUSDT', openInterest: '100000' }],
+  }, now);
+  assert.equal(markets.length, 1);
+  assert.equal(markets[0].symbol, 'HYPE');
+  assert.equal(markets[0].venue, 'Binance');
+  assert.equal(markets[0].shadow, true);
+  assert.equal(markets[0].fundingRate, -0.0006);
+});
+
+test('normalizes OKX USDT swaps for shadow evaluation', () => {
+  const markets = normalizeOkxMarkets({
+    tickers: [{ instId: 'HYPE-USDT-SWAP', last: '50', volCcy24h: '400000' }],
+    openInterests: [{ instId: 'HYPE-USDT-SWAP', oiCcy: '100000' }],
+    fundingRates: [{ instId: 'HYPE-USDT-SWAP', fundingRate: '-0.0006' }],
+  }, now);
+  assert.equal(markets.length, 1);
+  assert.equal(markets[0].symbol, 'HYPE');
+  assert.equal(markets[0].venue, 'OKX');
+  assert.equal(markets[0].turnover24h, 20_000_000);
+  assert.equal(markets[0].shadow, true);
+});
+
+test('normalizes Bitget USDT futures for shadow evaluation', () => {
+  const markets = normalizeBitgetMarkets({ code: '00000', data: [
+    { symbol: 'HYPEUSDT', markPrice: '50', turnover24h: '20000000', openInterest: '100000', fundingRate: '-0.0006' },
+  ] }, now);
+  assert.equal(markets.length, 1);
+  assert.equal(markets[0].symbol, 'HYPE');
+  assert.equal(markets[0].venue, 'Bitget');
+  assert.equal(markets[0].shadow, true);
 });
 
 test('normalizes Hyperliquid contexts and converts hourly funding to an 8h equivalent', () => {

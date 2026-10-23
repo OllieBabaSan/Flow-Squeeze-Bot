@@ -59,10 +59,8 @@ Set these values for a standalone Flow/Squeeze installation:
 DISCORD_WEBHOOK_URL=PASTE_YOUR_PRIVATE_WEBHOOK_HERE
 DISCORD_ALERT_ROLE_ID=
 FLOW_SQUEEZE_ENABLED=true
-NEWS_ALERTS_ENABLED=false
-DIRECTIONAL_PRESSURE_ENABLED=false
-X_PRIMARY_ENABLED=false
-EDITORIAL_GATE_ENABLED=false
+FLOW_POLL_SECONDS=30
+# No news, X, editorial, or Directional Pressure settings exist in this package.
 If you want role mentions, put the numeric role ID after DISCORD_ALERT_ROLE_ID=.
 Leave unrelated provider keys empty.
 Optional: add COINMARKETCAP_API_KEY for additional cross-market liquidation evidence. The bot still works without it and can confirm squeezes from falling venue open interest.

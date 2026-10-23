@@ -30,6 +30,61 @@ export function normalizeBybitMarkets(payload, observedAt = Date.now()) {
   });
 }
 
+export function normalizeBinanceMarkets({ tickers = [], premiums = [], openInterests = [], symbols = [] }, observedAt = Date.now()) {
+  const premiumBySymbol = new Map(premiums.map(row => [String(row.symbol || ''), row]));
+  const oiBySymbol = new Map(openInterests.map(row => [String(row.symbol || ''), row]));
+  const enabled = new Set(symbols
+    .filter(row => row?.contractType === 'PERPETUAL' && row?.quoteAsset === 'USDT' && row?.status === 'TRADING')
+    .map(row => String(row.symbol || '')));
+  return tickers.flatMap(row => {
+    const contract = String(row.symbol || '');
+    if (!enabled.has(contract) || !contract.endsWith('USDT')) return [];
+    const premium = premiumBySymbol.get(contract);
+    const oi = oiBySymbol.get(contract);
+    const market = {
+      symbol: contract.replace(/USDT$/, ''), venue: 'Binance', venueLabel: 'Binance USD-M perpetuals (shadow)',
+      venueSymbol: contract, price: Number(premium?.markPrice || row.lastPrice), turnover24h: Number(row.quoteVolume),
+      openInterest: Number(oi?.openInterest), fundingRate: Number(premium?.lastFundingRate),
+      fundingLabel: 'Funding (8h)', observedAt, shadow: true,
+    };
+    return market.symbol && finiteMarket(market) ? [market] : [];
+  });
+}
+
+export function normalizeOkxMarkets({ tickers = [], openInterests = [], fundingRates = [] }, observedAt = Date.now()) {
+  const oiByInstrument = new Map(openInterests.map(row => [String(row.instId || ''), row]));
+  const fundingByInstrument = new Map(fundingRates.map(row => [String(row.instId || ''), row]));
+  return tickers.flatMap(row => {
+    const instrument = String(row.instId || '');
+    const match = /^(.+)-USDT-SWAP$/.exec(instrument);
+    if (!match) return [];
+    const price = Number(row.last);
+    const market = {
+      symbol: match[1], venue: 'OKX', venueLabel: 'OKX USDT perpetuals (shadow)',
+      venueSymbol: instrument, price, turnover24h: Number(row.volCcy24h) * price,
+      openInterest: Number(oiByInstrument.get(instrument)?.oiCcy),
+      fundingRate: Number(fundingByInstrument.get(instrument)?.fundingRate),
+      fundingLabel: 'Funding', observedAt, shadow: true,
+    };
+    return market.symbol && finiteMarket(market) ? [market] : [];
+  });
+}
+
+export function normalizeBitgetMarkets(payload, observedAt = Date.now()) {
+  if (String(payload?.code) !== '00000') throw new Error(`Bitget ${payload?.msg || 'feed error'}`);
+  return (payload?.data || []).flatMap(row => {
+    const contract = String(row.symbol || '');
+    if (!contract.endsWith('USDT')) return [];
+    const market = {
+      symbol: contract.replace(/USDT$/, ''), venue: 'Bitget', venueLabel: 'Bitget USDT perpetuals (shadow)',
+      venueSymbol: contract, price: Number(row.markPrice || row.lastPrice),
+      turnover24h: Number(row.turnover24h), openInterest: Number(row.openInterest),
+      fundingRate: Number(row.fundingRate), fundingLabel: 'Funding', observedAt, shadow: true,
+    };
+    return market.symbol && finiteMarket(market) ? [market] : [];
+  });
+}
+
 export function normalizeHyperliquidMarkets(payload, observedAt = Date.now()) {
   const [meta, contexts] = Array.isArray(payload) ? payload : [];
   if (!Array.isArray(meta?.universe) || !Array.isArray(contexts)) throw new Error('Hyperliquid malformed feed');
