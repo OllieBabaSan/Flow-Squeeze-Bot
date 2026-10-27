@@ -4,6 +4,10 @@ Standalone Node.js monitor for evidence-based Flow and Squeeze Pressure alerts.
 It polls Bybit and Hyperliquid perpetual markets, validates price movement with
 turnover and open-interest data, verifies token identity, posts qualified alerts
 to Discord, and follows Squeeze Pressure through confirmation or invalidation.
+It also monitors Binance, OKX, and Bitget contracts that overlap Hyperliquid and
+writes qualified signals from those venues to the canonical history as passive
+`SHADOW` observations. Shadow observations do not post to Discord. Binance is a
+primary paper-strategy source; OKX and Bitget are passive source benchmarks.
 
 This package contains no X ingestion, news ingestion, editorial model,
 Directional Pressure Bot, trading, wallet, or exchange-order functionality. It

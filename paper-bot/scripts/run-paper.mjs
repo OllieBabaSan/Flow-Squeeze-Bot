@@ -206,6 +206,11 @@ async function cycle() {
   const catalog = await fetchMarkets();
   state.rejectedObservations ||= {};
   state.postExitObservations ||= {};
+  // Reject venue mismatches before requesting order books. This preserves the
+  // normal rejection event while avoiding work for symbols we cannot trade.
+  for (const candidate of Object.values({ ...state.candidates })) {
+    if (!catalog.has(candidate.symbol)) await reject(candidate, 'NOT_LISTED_ON_HYPERLIQUID', {}, null, now);
+  }
   const requiredSymbols = new Set([...Object.values(state.candidates), ...Object.values(state.positions), ...Object.values(state.rejectedObservations), ...Object.values(state.postExitObservations)].map(item => item.symbol));
   const books = new Map();
   await Promise.all([...requiredSymbols].map(async symbol => {
