@@ -9,6 +9,7 @@ import { createFlowTrackingPosition, evaluateFlowFollowUp, flowAlertLabel } from
 import { detectFlowIgnition, isFlowPriceCandidate, normalizeBinanceMarkets, normalizeBitgetMarkets, normalizeBybitMarkets, normalizeHyperliquidMarkets, normalizeOkxMarkets } from '../lib/flow-detector.mjs';
 import { findPerpDexVenues, perpDexAlertField, refreshPerpDexCatalogs } from '../lib/perp-dex-discovery.mjs';
 import { readJsonWithBackup, writeJsonAtomic } from '../lib/state-file.mjs';
+import { createRateLimitBackoff, flowAlertCooldownMs } from '../lib/runtime-policy.mjs';
 import { contractAddressLabel, hasVerifiedContract, isMemeToken, registryLabel, resolveTrackedToken } from '../lib/token-registry.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,6 +19,7 @@ const ledger = createAlertLedger({ ledgerPath: resolve(data, 'flow-alert-ledger.
 const once = process.argv.includes('--once');
 const dryRun = process.argv.includes('--dry-run');
 let cmcClient;
+const hyperliquidBackoff = createRateLimitBackoff();
 
 async function environment() {
   for (const file of ['.env.local', '.env']) try {
@@ -46,7 +48,17 @@ const saveState = state => writeJsonAtomic(paths.state, state);
 async function markets(now) {
   const calls = [
     ['Bybit', async () => { const r = await fetch('https://api.bybit.com/v5/market/tickers?category=linear', { signal: AbortSignal.timeout(12000) }); if (!r.ok) throw new Error(`HTTP ${r.status}`); return normalizeBybitMarkets(await r.json(), now); }],
-    ['Hyperliquid', async () => { const r = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'metaAndAssetCtxs' }), signal: AbortSignal.timeout(12000) }); if (!r.ok) throw new Error(`HTTP ${r.status}`); return normalizeHyperliquidMarkets(await r.json(), now); }],
+    ['Hyperliquid', async () => {
+      const remaining = hyperliquidBackoff.remainingMs(now);
+      if (remaining) throw new Error(`rate-limit backoff ${Math.ceil(remaining / 1000)}s`);
+      const r = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'metaAndAssetCtxs' }), signal: AbortSignal.timeout(12000) });
+      if (!r.ok) {
+        hyperliquidBackoff.reject(r.status, r.headers.get('retry-after'), now);
+        throw new Error(`HTTP ${r.status}`);
+      }
+      hyperliquidBackoff.success();
+      return normalizeHyperliquidMarkets(await r.json(), now);
+    }],
   ];
   const results = await Promise.allSettled(calls.map(([, call]) => call()));
   const rows = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
@@ -145,6 +157,7 @@ async function initial(market, detection, identity, allMarkets) {
 }
 async function scan() {
   const now = Date.now(); const state = await loadState(); state.snapshots ||= {}; state.symbolAlerted ||= {}; state.shadowAlerted ||= {}; state.flowTracking ||= {};
+  const alertCooldownMs = flowAlertCooldownMs();
   if (!cmcClient && process.env.COINMARKETCAP_API_KEY) cmcClient = createCmcDerivativesClient({ apiKey: process.env.COINMARKETCAP_API_KEY });
   void refreshPerpDexCatalogs({ now }).catch(() => []); const rows = await markets(now); const byKey = new Map(rows.map(row => [`${row.venue}:${row.symbol}`, row])); const quotes = new Map(); let sent = 0;
   for (const [id, position] of Object.entries(state.flowTracking)) {
@@ -160,7 +173,7 @@ async function scan() {
     const key = `${market.venue}:${market.symbol}`; quotes.set(key, market.price); const previous = state.snapshots[key];
     if (!market.shadow && isFlowPriceCandidate(market, previous, now)) try { market = await enrich(market, previous.observedAt); } catch (error) { await log(`enrichment_failed ${key} ${error.message}`); }
     const detection = detectFlowIgnition(market, previous, now); const recent = market.shadow ? state.shadowAlerted[key] : state.symbolAlerted[key];
-    if (detection.eligible && !(recent && now - recent < 12 * 3600_000)) {
+    if (detection.eligible && !(recent && now - recent < alertCooldownMs)) {
       const identity = await resolveTrackedToken(market.symbol, { referencePrice: market.price });
       if (identity && (!isMemeToken(identity) || hasVerifiedContract(identity))) {
         const id = `${market.shadow ? 'flow-shadow' : 'flow'}:${key}:${now}`; const createdAt = new Date(now).toISOString();

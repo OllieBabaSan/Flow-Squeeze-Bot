@@ -1,12 +1,16 @@
 import { readFile } from 'node:fs/promises';
 
-const state = JSON.parse(await readFile(new URL('../data/alert-outcomes.json', import.meta.url), 'utf8'));
-const records = Object.values(state.records || {}).filter(record => record.kind === 'flow' && ['sent', 'shadow'].includes(record.status));
-const horizons = [5, 15, 30, 60, 240];
+const dataUrl = new URL('../data/', import.meta.url);
+const active = JSON.parse(await readFile(new URL('flow-alert-outcomes.json', dataUrl), 'utf8'));
+const archiveText = await readFile(new URL('flow-alert-outcomes-archive.jsonl', dataUrl), 'utf8').catch(() => '');
+const archived = archiveText.split(/\r?\n/).filter(Boolean).map(JSON.parse);
+const byId = new Map([...archived, ...Object.values(active.records || {})].map(record => [record.id, record]));
+const records = [...byId.values()].filter(record => record.kind === 'flow' && ['sent', 'shadow'].includes(record.status));
+const horizons = [5, 15, 30, 60, 240, 720, 1440];
 const median = values => { const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2; };
 const metrics = cohort => Object.fromEntries(horizons.map(horizon => {
   const values = cohort.map(record => record.horizons?.[horizon]?.directedReturnPct).filter(Number.isFinite);
-  return [`${horizon}m`, { n: values.length, directionalAccuracyPct: values.length ? values.filter(value => value > 0).length / values.length * 100 : null, meaningfulMovePct: values.length ? values.filter(value => value >= 1).length / values.length * 100 : null, medianDirectedReturnPct: values.length ? median(values) : null, meanDirectedReturnPct: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null }];
+  return [`${horizon}m`, { n: values.length, completionPct: cohort.length ? values.length / cohort.length * 100 : null, directionalAccuracyPct: values.length ? values.filter(value => value > 0).length / values.length * 100 : null, meaningfulMovePct: values.length ? values.filter(value => value >= 1).length / values.length * 100 : null, medianDirectedReturnPct: values.length ? median(values) : null, meanDirectedReturnPct: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null }];
 }));
 const venues = [...new Set(records.map(record => record.venue))];
 const byVenue = Object.fromEntries(venues.map(venue => {
