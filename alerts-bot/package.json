@@ -9,6 +9,9 @@
     "once": "node scripts/local-radar.mjs --once",
     "dry-run": "node scripts/local-radar.mjs --once --dry-run",
     "test": "node --test",
-    "performance": "node scripts/backtest-flow-alerts.mjs"
+    "performance": "node scripts/backtest-flow-alerts.mjs",
+    "paths": "node scripts/report-alert-paths.mjs",
+    "breakout-paths": "node scripts/report-alert-paths.mjs --kind breakout-shadow --status breakout-shadow",
+    "venue-health": "node scripts/report-venue-health.mjs"
   }
 }

@@ -1,0 +1,25 @@
+[Unit]
+Description=Flow/Squeeze outbound breakout dashboard publisher
+After=network-online.target flow-squeeze-publisher.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flow-squeeze
+Group=flow-squeeze
+WorkingDirectory=/opt/flow-squeeze/release/Flow-Squeeze-Bot/alerts-bot
+EnvironmentFile=/etc/flow-squeeze/feed.env
+ExecStart=/usr/bin/node scripts/breakout-feed-publisher.mjs
+Restart=always
+RestartSec=5
+MemoryMax=128M
+TasksMax=32
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/flow-squeeze/alerts-data
+
+[Install]
+WantedBy=multi-user.target

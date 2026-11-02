@@ -23,8 +23,10 @@ export function normalizeBybitMarkets(payload, observedAt = Date.now()) {
     const market = {
       symbol: contract.replace(/USDT$/, ''), venue: 'Bybit', venueLabel: 'Bybit perpetuals',
       price: Number(row.lastPrice), turnover24h: Number(row.turnover24h),
+      bestBid: Number(row.bid1Price), bestAsk: Number(row.ask1Price),
       openInterest: Number(row.openInterest), fundingRate: Number(row.fundingRate),
       fundingLabel: 'Funding', observedAt,
+      change24hPct: Number(row.price24hPcnt) * 100,
     };
     return finiteMarket(market) ? [market] : [];
   });
@@ -44,6 +46,7 @@ export function normalizeBinanceMarkets({ tickers = [], premiums = [], openInter
     const market = {
       symbol: contract.replace(/USDT$/, ''), venue: 'Binance', venueLabel: 'Binance USD-M perpetuals (shadow)',
       venueSymbol: contract, price: Number(premium?.markPrice || row.lastPrice), turnover24h: Number(row.quoteVolume),
+      bestBid: Number(row.bidPrice), bestAsk: Number(row.askPrice),
       openInterest: Number(oi?.openInterest), fundingRate: Number(premium?.lastFundingRate),
       fundingLabel: 'Funding (8h)', observedAt, shadow: true,
     };
@@ -99,6 +102,7 @@ export function normalizeHyperliquidMarkets(payload, observedAt = Date.now()) {
       // so the existing crowded-short threshold remains comparable across venues.
       fundingRate: Number(context.funding) * 8,
       fundingLabel: 'Funding (8h equivalent)', observedAt,
+      change24hPct: Number(context.prevDayPx) > 0 ? (Number(context.markPx) / Number(context.prevDayPx) - 1) * 100 : NaN,
     };
     return market.symbol && finiteMarket(market) ? [market] : [];
   });

@@ -37,6 +37,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
-/data/
+/data
 /tmp/
 /backtest/x-market-cache/
