@@ -1,0 +1,27 @@
+[Unit]
+Description=Flow/Squeeze isolated breakout research observer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flow-squeeze
+Group=flow-squeeze
+WorkingDirectory=/opt/flow-squeeze/release/Flow-Squeeze-Bot/alerts-bot
+EnvironmentFile=/etc/flow-squeeze/alerts.env
+Environment=FLOW_RUNTIME_ROLE=breakout
+Environment=BREAKOUT_MAX_ACTIVE_RECORDS=2000
+ExecStart=/usr/bin/node scripts/local-radar.mjs
+Restart=on-failure
+RestartSec=5
+MemoryHigh=384M
+MemoryMax=512M
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/flow-squeeze/alerts-data
+
+[Install]
+WantedBy=multi-user.target

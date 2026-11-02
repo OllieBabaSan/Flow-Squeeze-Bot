@@ -3,6 +3,7 @@ import { mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAlertLedger } from '../lib/alert-ledger.mjs';
+import { createBreakoutOutcomeStore } from '../lib/breakout-outcome-store.mjs';
 import { preliminaryBreakout, relativeVolume, updateBreakoutSeries } from '../lib/breakout-observer.mjs';
 import { buildBreakoutFeed } from '../lib/breakout-feed.mjs';
 import { evaluateBreakoutQuality } from '../lib/breakout-quality.mjs';
@@ -21,8 +22,10 @@ import { updateVenueHealth, venueHealthSummary } from '../lib/venue-health.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const data = resolve(root, 'data');
-const paths = { state: resolve(data, 'flow-state.json'), breakoutState: resolve(data, 'breakout-observer-state.json'), breakoutFeed: resolve(data, 'breakout-live-feed.json'), venueHealth: resolve(data, 'venue-health.json'), venueHealthHistory: resolve(data, 'venue-health-history.jsonl'), log: resolve(data, 'flow-squeeze.log'), history: resolve(data, 'flow-alert-history.jsonl'), regimeShadow: resolve(data, 'flow-regime-shadow.jsonl'), confirmationShadow: resolve(data, 'flow-confirmation-shadow.jsonl'), breakoutShadow: resolve(data, 'breakout-shadow.jsonl'), lock: resolve(data, 'flow-squeeze.lock') };
+const configuredRuntimeRole = String(process.env.FLOW_RUNTIME_ROLE || 'combined').toLowerCase();
+const paths = { state: resolve(data, 'flow-state.json'), breakoutState: resolve(data, 'breakout-observer-state.json'), breakoutFeed: resolve(data, 'breakout-live-feed.json'), breakoutOutcomes: resolve(data, 'breakout-outcomes.sqlite3'), venueHealth: resolve(data, configuredRuntimeRole === 'breakout' ? 'breakout-venue-health.json' : 'venue-health.json'), venueHealthHistory: resolve(data, configuredRuntimeRole === 'breakout' ? 'breakout-venue-health-history.jsonl' : 'venue-health-history.jsonl'), log: resolve(data, configuredRuntimeRole === 'breakout' ? 'breakout-observer.log' : 'flow-squeeze.log'), history: resolve(data, 'flow-alert-history.jsonl'), regimeShadow: resolve(data, 'flow-regime-shadow.jsonl'), confirmationShadow: resolve(data, 'flow-confirmation-shadow.jsonl'), breakoutShadow: resolve(data, 'breakout-shadow.jsonl'), lock: resolve(data, configuredRuntimeRole === 'breakout' ? 'breakout-observer.lock' : 'flow-squeeze.lock') };
 const ledger = createAlertLedger({ ledgerPath: resolve(data, 'flow-alert-ledger.jsonl'), outcomeStatePath: resolve(data, 'flow-alert-outcomes.json'), outcomeArchivePath: resolve(data, 'flow-alert-outcomes-archive.jsonl') });
+const breakoutStore = createBreakoutOutcomeStore({ databasePath: paths.breakoutOutcomes, maximumActiveRecords: Number(process.env.BREAKOUT_MAX_ACTIVE_RECORDS || 2000) });
 const once = process.argv.includes('--once');
 const dryRun = process.argv.includes('--dry-run');
 let cmcClient;
@@ -247,11 +250,16 @@ async function initial(market, detection, identity, allMarkets) {
   ], detection.direction);
 }
 async function scan() {
-  const now = Date.now(); const state = await loadState(); state.snapshots ||= {}; state.symbolAlerted ||= {}; state.shadowAlerted ||= {}; state.regimeSuppressed ||= {}; state.confirmationRejected ||= {}; state.flowCandidates ||= {}; state.flowTracking ||= {};
-  if (!breakoutRuntime) breakoutRuntime = await readJsonWithBackup(paths.breakoutState, { series: state.breakoutSeries || {}, observed: state.breakoutObserved || {} });
-  breakoutRuntime.series ||= {}; breakoutRuntime.observed ||= {};
-  breakoutRuntime.activeSince ||= {};
-  breakoutRuntime.activity ||= {};
+  const now = Date.now();
+  const runtimeRole = configuredRuntimeRole;
+  const flowEnabled = runtimeRole !== 'breakout';
+  const breakoutEnabled = runtimeRole !== 'alerts';
+  const state = await loadState(); state.snapshots ||= {}; state.symbolAlerted ||= {}; state.shadowAlerted ||= {}; state.regimeSuppressed ||= {}; state.confirmationRejected ||= {}; state.flowCandidates ||= {}; state.flowTracking ||= {};
+  if (breakoutEnabled && !breakoutRuntime) breakoutRuntime = await readJsonWithBackup(paths.breakoutState, { series: state.breakoutSeries || {}, observed: state.breakoutObserved || {} });
+  if (breakoutEnabled) {
+    breakoutRuntime.series ||= {}; breakoutRuntime.observed ||= {};
+    breakoutRuntime.activeSince ||= {}; breakoutRuntime.activity ||= {}; breakoutRuntime.episodes ||= {};
+  }
   delete state.breakoutSeries; delete state.breakoutObserved;
   const breakoutBucket = Math.floor(now / (5 * 60_000));
   const alertCooldownMs = flowAlertCooldownMs();
@@ -267,7 +275,7 @@ async function scan() {
   const byKey = new Map(rows.map(row => [`${row.venue}:${row.symbol}`, row]));
   const quotes = new Map(); const breakoutQueue = []; const activeBreakouts = [];
   let sent = 0; let regimeSuppressed = 0; let confirmationStarted = 0; let confirmationRejected = 0; let breakoutObserved = 0;
-  for (const [id, position] of Object.entries(state.flowTracking)) {
+  for (const [id, position] of flowEnabled ? Object.entries(state.flowTracking) : []) {
     const market = byKey.get(position.quoteKey); if (!market) continue;
     let liquidationEvidence = null;
     if (cmcClient) try { liquidationEvidence = await cmcClient.liquidationEvidence(position.symbol, position.direction); } catch (error) { await log(`liquidation_evidence_unavailable symbol=${position.symbol} error=${error.message || error}`); }
@@ -276,22 +284,27 @@ async function scan() {
     if (update.event && !dryRun) { const discordReceipt = await discord(`${update.event.replaceAll('_', ' ')} · ${position.direction} · ${position.symbol}`, 'Follow-up to the earlier squeeze-pressure alert.', [{ name: 'Price since alert', value: `${update.evidence.directedMovePct.toFixed(2)}%` }, { name: 'Open-interest change', value: update.evidence.oiChangePct == null ? 'Unavailable' : `${update.evidence.oiChangePct.toFixed(2)}%` }], position.direction); await ledger.append({ type: 'flow_follow_up', id, event: update.event, evidence: update.evidence, discordReceipt }); }
     if (update.stage === 'CLOSED') delete state.flowTracking[id];
   }
+  const hyperliquidSymbols = new Set(rows.filter(row => row.venue === 'Hyperliquid').map(row => row.symbol));
   for (let market of rows) {
     const key = `${market.venue}:${market.symbol}`; quotes.set(key, market.price); const previous = state.snapshots[key];
     const recent = market.shadow ? state.shadowAlerted[key] : state.symbolAlerted[key];
-    if (!market.shadow) {
+    const inBreakoutUniverse = ['Bybit', 'Binance'].includes(market.venue) && hyperliquidSymbols.has(market.symbol);
+    if (breakoutEnabled && inBreakoutUniverse) {
       const series = updateBreakoutSeries(breakoutRuntime.series[key], market, now);
       breakoutRuntime.series[key] = series;
       const breakout = preliminaryBreakout(series, market, now);
-      const recentBreakout = breakoutRuntime.observed[key];
       if (breakout.eligible) {
         breakoutRuntime.activeSince[key] ||= now;
-        activeBreakouts.push({ key, market, breakout, series, firstSeenAt: breakoutRuntime.activeSince[key] });
+        let episode = breakoutRuntime.episodes[key];
+        if (!episode || episode.direction !== breakout.direction || now - Number(episode.lastSeenAt || 0) > 15 * 60_000) {
+          episode = { id: `breakout-shadow:${key}:${breakout.direction}:${now}`, direction: breakout.direction, firstSeenAt: now, lastSeenAt: now, recorded: false };
+          breakoutRuntime.episodes[key] = episode;
+        } else episode.lastSeenAt = now;
+        activeBreakouts.push({ key, market, breakout, series, firstSeenAt: episode.firstSeenAt, episodeId: episode.id });
+        if (!episode.recorded) breakoutQueue.push({ key, market, breakout, episode });
       } else delete breakoutRuntime.activeSince[key];
-      if (breakout.eligible && !(recentBreakout && now - recentBreakout < 4 * 3600_000)) {
-        breakoutQueue.push({ key, market, breakout });
-      }
     }
+    if (!flowEnabled) continue;
     if (!market.shadow && isFlowPriceCandidate(market, previous, now)) try { market = await enrich(market, previous.observedAt); } catch (error) { await log(`enrichment_failed ${key} ${error.message}`); }
     let rawDetection;
     const candidate = !market.shadow ? state.flowCandidates[key] : null;
@@ -370,32 +383,36 @@ async function scan() {
   }
   // Shadow enrichment runs only after the live Flow/Squeeze publication loop,
   // so research API latency can never delay a production alert in this scan.
-  const enrichedBreakouts = await Promise.all(breakoutQueue.slice(0, 8).map(async candidate => {
+  const enrichedBreakouts = breakoutEnabled ? await Promise.all(breakoutQueue.slice(0, 8).map(async candidate => {
     try { return { ...candidate, activity: await breakoutActivity(candidate.market, now) }; }
     catch (error) { return { ...candidate, activity: { relativeActivity: null, activitySource: 'UNAVAILABLE', activityError: error.message || String(error) } }; }
-  }));
+  })) : [];
   for (const candidate of enrichedBreakouts) breakoutRuntime.activity[candidate.key] = { ...candidate.activity, updatedAt: now };
-  const activityByKey = new Map(Object.entries(breakoutRuntime.activity));
-  for (const { key, market, breakout, activity } of enrichedBreakouts) {
-    const id = `breakout-shadow:${key}:${now}`; const createdAt = new Date(now).toISOString();
+  const activityByKey = new Map(Object.entries(breakoutRuntime?.activity || {}));
+  for (const { key, market, breakout, activity, episode } of enrichedBreakouts) {
+    const id = episode.id; const createdAt = new Date(episode.firstSeenAt).toISOString();
     const observationBase = { ...breakout, ...activity, regime, publicationStatus: 'SHADOW_ONLY' };
     const qualityGate = evaluateBreakoutQuality({ observation: observationBase, market, regime });
     const observation = { ...observationBase, qualityGate };
-    breakoutRuntime.observed[key] = now;
-    await ledger.reserve({ id, kind: 'breakout-shadow', symbol: market.symbol, direction: breakout.direction, entryPrice: market.price, entryOpenInterest: market.openInterest, entryAt: createdAt, quoteKey: key, venue: market.venue, shadow: true, trigger: observation });
+    const admission = await breakoutStore.reserve({ id, episodeKey: `${key}:${breakout.direction}:${episode.firstSeenAt}`, symbol: market.symbol, direction: breakout.direction, entryPrice: market.price, entryAt: createdAt, quoteKey: key, venue: market.venue, trigger: observation });
+    if (!admission.admitted) { await log(`breakout_shadow_suppressed ${key} reason=${admission.reason}`); continue; }
     const record = { schemaVersion: 1, detectorVersion: 'breakout-observer-v1-quality-shadow-v1', signalId: id, publicationStatus: 'SHADOW_ONLY', createdAt, recordedAt: new Date().toISOString(), market, observation };
-    const writes = await Promise.allSettled([ledger.delivery(id, 'breakout-shadow'), writeFile(paths.breakoutShadow, `${JSON.stringify(record)}\n`, { flag: 'a' })]);
+    const writes = await Promise.allSettled([breakoutStore.delivery(id, 'breakout-shadow'), writeFile(paths.breakoutShadow, `${JSON.stringify(record)}\n`, { flag: 'a' })]);
     const failure = writes.find(result => result.status === 'rejected'); if (failure) throw failure.reason;
+    episode.recorded = true;
     breakoutObserved++; await log(`breakout_shadow ${key} direction=${breakout.direction} clearanceAtr=${breakout.clearanceAtr.toFixed(2)} oiContext=${breakout.derivativesContext} relativeActivity=${activity.relativeActivity == null ? 'n/a' : activity.relativeActivity.toFixed(2)} quality=${qualityGate.score} qualityStatus=${qualityGate.status}`);
   }
-  const keep = now - 24 * 3600_000; state.symbolAlerted = Object.fromEntries(Object.entries(state.symbolAlerted).filter(([, at]) => at >= keep)); state.shadowAlerted = Object.fromEntries(Object.entries(state.shadowAlerted).filter(([, at]) => at >= keep)); state.regimeSuppressed = Object.fromEntries(Object.entries(state.regimeSuppressed).filter(([, at]) => at >= keep)); state.confirmationRejected = Object.fromEntries(Object.entries(state.confirmationRejected).filter(([, at]) => at >= now - 3600_000)); state.flowCandidates = Object.fromEntries(Object.entries(state.flowCandidates).filter(([, item]) => now - Number(item.detectedAt) <= 10 * 60_000)); state.flowTracking = Object.fromEntries(Object.entries(state.flowTracking).filter(([, item]) => Number(item.entryAt) >= keep)); breakoutRuntime.observed = Object.fromEntries(Object.entries(breakoutRuntime.observed).filter(([, at]) => at >= now - 4 * 3600_000)); breakoutRuntime.series = Object.fromEntries(Object.entries(breakoutRuntime.series).filter(([, series]) => now - Number(series.updatedAt) <= 3 * 3600_000)); const activeKeys = new Set(activeBreakouts.map(candidate => candidate.key)); breakoutRuntime.activeSince = Object.fromEntries(Object.entries(breakoutRuntime.activeSince).filter(([key]) => activeKeys.has(key))); breakoutRuntime.activity = Object.fromEntries(Object.entries(breakoutRuntime.activity).filter(([key, item]) => activeKeys.has(key) || now - Number(item.updatedAt) <= 4 * 3600_000));
+  const keep = now - 24 * 3600_000; state.symbolAlerted = Object.fromEntries(Object.entries(state.symbolAlerted).filter(([, at]) => at >= keep)); state.shadowAlerted = Object.fromEntries(Object.entries(state.shadowAlerted).filter(([, at]) => at >= keep)); state.regimeSuppressed = Object.fromEntries(Object.entries(state.regimeSuppressed).filter(([, at]) => at >= keep)); state.confirmationRejected = Object.fromEntries(Object.entries(state.confirmationRejected).filter(([, at]) => at >= now - 3600_000)); state.flowCandidates = Object.fromEntries(Object.entries(state.flowCandidates).filter(([, item]) => now - Number(item.detectedAt) <= 10 * 60_000)); state.flowTracking = Object.fromEntries(Object.entries(state.flowTracking).filter(([, item]) => Number(item.entryAt) >= keep));
+  if (breakoutEnabled) {
+    breakoutRuntime.observed = {}; breakoutRuntime.series = Object.fromEntries(Object.entries(breakoutRuntime.series).filter(([, series]) => now - Number(series.updatedAt) <= 3 * 3600_000)); const activeKeys = new Set(activeBreakouts.map(candidate => candidate.key)); breakoutRuntime.activeSince = Object.fromEntries(Object.entries(breakoutRuntime.activeSince).filter(([key]) => activeKeys.has(key))); breakoutRuntime.activity = Object.fromEntries(Object.entries(breakoutRuntime.activity).filter(([key, item]) => activeKeys.has(key) || now - Number(item.updatedAt) <= 4 * 3600_000)); breakoutRuntime.episodes = Object.fromEntries(Object.entries(breakoutRuntime.episodes).filter(([, episode]) => now - Number(episode.lastSeenAt || 0) <= 15 * 60_000));
+  }
   const venueSummary = ['Bybit', 'Hyperliquid', 'Binance', 'OKX', 'Bitget'].map(venue => `${venue}=${rows.filter(row => row.venue === venue).length}`).join(' ');
-  await saveState(state);
-  if (breakoutPersistBucket !== breakoutBucket || breakoutObserved) {
+  if (flowEnabled) await saveState(state);
+  if (breakoutEnabled && (breakoutPersistBucket !== breakoutBucket || breakoutObserved)) {
     await writeJsonAtomic(paths.breakoutState, breakoutRuntime); breakoutPersistBucket = breakoutBucket;
   }
   const scanIntervalSeconds = Math.max(20, Number(process.env.FLOW_POLL_SECONDS || 20));
-  await writeJsonAtomic(paths.breakoutFeed, buildBreakoutFeed({
+  if (breakoutEnabled) await writeJsonAtomic(paths.breakoutFeed, buildBreakoutFeed({
     active: activeBreakouts.map(candidate => {
       const activity = activityByKey.get(candidate.key);
       const qualityGate = evaluateBreakoutQuality({ observation: { ...candidate.breakout, ...activity }, market: candidate.market, regime });
@@ -407,7 +424,11 @@ async function scan() {
     now,
     scanIntervalSeconds,
   }));
-  await ledger.observe('flow', quotes, now); await ledger.observe('breakout-shadow', quotes, now); await log(`markets=${rows.length} ${venueSummary} venueHealth=${venueHealthSummary(venueHealthRuntime)} regime=${regime.state} benchmark24h=${regime.benchmarkChangePct?.toFixed?.(2) ?? 'n/a'} negativeBreadth=${regime.negativeBreadthRatio == null ? 'n/a' : (regime.negativeBreadthRatio * 100).toFixed(1) + '%'} alerts=${sent} breakoutObserved=${breakoutObserved} breakoutWarming=${Object.values(breakoutRuntime.series).filter(series => (series.bars?.length || 0) < 21).length} confirmationStarted=${confirmationStarted} confirmationRejected=${confirmationRejected} confirmationPending=${Object.keys(state.flowCandidates).length} regimeSuppressed=${regimeSuppressed}${rows.failures?.length ? ` failures=${rows.failures.join('|')}` : ''}${dryRun ? ' dry-run' : ''}`);
+  if (flowEnabled) await ledger.observe('flow', quotes, now);
+  let breakoutTelemetry = null;
+  if (breakoutEnabled) { await breakoutStore.observe(quotes, now); breakoutTelemetry = await breakoutStore.telemetry(now); }
+  const memory = process.memoryUsage();
+  await log(`role=${runtimeRole} markets=${rows.length} ${venueSummary} venueHealth=${venueHealthSummary(venueHealthRuntime)} regime=${regime.state} benchmark24h=${regime.benchmarkChangePct?.toFixed?.(2) ?? 'n/a'} negativeBreadth=${regime.negativeBreadthRatio == null ? 'n/a' : (regime.negativeBreadthRatio * 100).toFixed(1) + '%'} alerts=${sent} breakoutObserved=${breakoutObserved} breakoutWarming=${breakoutEnabled ? Object.values(breakoutRuntime.series).filter(series => (series.bars?.length || 0) < 21).length : 0} breakoutActiveRecords=${breakoutTelemetry?.activeRecords ?? 0} breakoutCreatedLastHour=${breakoutTelemetry?.createdLastHour ?? 0} breakoutDbBytes=${breakoutTelemetry?.databaseBytes ?? 0} rssBytes=${memory.rss} heapUsedBytes=${memory.heapUsed} confirmationStarted=${confirmationStarted} confirmationRejected=${confirmationRejected} confirmationPending=${Object.keys(state.flowCandidates).length} regimeSuppressed=${regimeSuppressed}${rows.failures?.length ? ` failures=${rows.failures.join('|')}` : ''}${dryRun ? ' dry-run' : ''}`);
 }
 
 await environment(); if (!(await lock())) process.exit(0); const interval = Math.max(20, Number(process.env.FLOW_POLL_SECONDS || 20)) * 1000; await log(`started standalone=true pollSeconds=${interval / 1000}`);
