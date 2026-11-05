@@ -3,6 +3,7 @@ import { mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAlertLedger } from '../lib/alert-ledger.mjs';
+import { fetchJsonBounded } from '../lib/bounded-json-fetch.mjs';
 import { createBreakoutOutcomeStore } from '../lib/breakout-outcome-store.mjs';
 import { preliminaryBreakout, relativeVolume, updateBreakoutSeries } from '../lib/breakout-observer.mjs';
 import { buildBreakoutFeed } from '../lib/breakout-feed.mjs';
@@ -34,38 +35,6 @@ let breakoutPersistBucket;
 let venueHealthRuntime;
 const hyperliquidBackoff = createRateLimitBackoff();
 let breakoutMaintenanceBucket;
-
-const delay = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
-async function mapSettledWithConcurrency(items, concurrency, worker) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  const runners = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      try { results[index] = { status: 'fulfilled', value: await worker(items[index], index) }; }
-      catch (reason) { results[index] = { status: 'rejected', reason }; }
-    }
-  });
-  await Promise.all(runners);
-  return results;
-}
-async function fetchJsonWithRetry(url, { attempts = 3, timeoutMs = 7000 } = {}) {
-  let lastError;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-      if (response.ok) return { body: await response.json(), attempts: attempt };
-      const error = new Error(`HTTP ${response.status}`);
-      error.retryable = response.status === 429 || response.status >= 500;
-      throw error;
-    } catch (error) {
-      lastError = error;
-      if (attempt >= attempts || error.retryable === false) break;
-      await delay(200 * (2 ** (attempt - 1)) + Math.floor(Math.random() * 100));
-    }
-  }
-  throw lastError;
-}
 
 async function environment() {
   for (const file of ['.env.local', '.env']) try {
@@ -161,14 +130,20 @@ async function markets(now) {
       });
       const requestedOiConcurrency = Number(process.env.BINANCE_OI_CONCURRENCY || 8);
       const oiConcurrency = Number.isFinite(requestedOiConcurrency) ? Math.max(2, Math.min(12, requestedOiConcurrency)) : 8;
-      const oiResults = await mapSettledWithConcurrency(eligibleContracts, oiConcurrency, async row => {
-        const result = await fetchJsonWithRetry(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${encodeURIComponent(row.symbol)}`);
-        return { ...result.body, requestAttempts: result.attempts };
-      });
+      const oiFetch = await fetchJsonBounded(eligibleContracts, async row => {
+        const response = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${encodeURIComponent(row.symbol)}`, { signal: AbortSignal.timeout(7000) });
+        if (!response.ok) {
+          const error = new Error(`${row.symbol} HTTP ${response.status}`);
+          error.retryable = response.status === 429 || response.status >= 500;
+          throw error;
+        }
+        return response.json();
+      }, { concurrency: oiConcurrency, retries: Number(process.env.BINANCE_OI_RETRIES || 2) });
+      const oiResults = oiFetch.results;
       rows.push(...normalizeBinanceMarkets({ tickers, premiums, openInterests: oiResults.flatMap(result => result.status === 'fulfilled' ? [result.value] : []), symbols: eligibleContracts }, now));
       const oiFailures = oiResults.filter(result => result.status === 'rejected').length;
-      const retriedRequests = oiResults.filter(result => result.status === 'fulfilled' && Number(result.value.requestAttempts) > 1).length;
-      const retryAttempts = oiResults.reduce((sum, result) => sum + (result.status === 'fulfilled' ? Math.max(0, Number(result.value.requestAttempts) - 1) : 0), 0);
+      const retriedRequests = oiFetch.attemptsByItem.filter(attempts => attempts > 1).length;
+      const retryAttempts = oiFetch.retriesUsed;
       if (oiFailures) failures.push(`Binance: ${oiFailures}/${oiResults.length} open-interest requests failed`);
       venueReports.push({ venue: 'Binance', status: oiFailures ? 'PARTIAL' : 'HEALTHY', marketCount: rows.filter(market => market.venue === 'Binance').length, durationMs: Date.now() - venueStartedAt, failedRequests: oiFailures, totalRequests: oiResults.length, retriedRequests, retryAttempts, concurrency: oiConcurrency });
     } catch (error) {
