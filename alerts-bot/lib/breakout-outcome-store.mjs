@@ -111,6 +111,29 @@ export function createBreakoutOutcomeStore({ databasePath, maximumActiveRecords 
       }
       return outcomes;
     },
+    maintain: async ({ completedBeforeMs } = {}) => {
+      const db = await open();
+      const cutoff = Number(completedBeforeMs);
+      if (!(cutoff > 0)) return { prunedRecords: 0, prunedOutcomes: 0 };
+      const stale = db.prepare('SELECT id FROM breakout_records WHERE completed_at_ms IS NOT NULL AND completed_at_ms < ?').all(cutoff);
+      if (!stale.length) {
+        db.exec('PRAGMA optimize; PRAGMA wal_checkpoint(PASSIVE);');
+        return { prunedRecords: 0, prunedOutcomes: 0 };
+      }
+      const deleteOutcomes = db.prepare('DELETE FROM breakout_outcomes WHERE record_id = ?');
+      const deleteRecord = db.prepare('DELETE FROM breakout_records WHERE id = ?');
+      let prunedOutcomes = 0;
+      db.exec('BEGIN');
+      try {
+        for (const { id } of stale) {
+          prunedOutcomes += Number(deleteOutcomes.run(id).changes || 0);
+          deleteRecord.run(id);
+        }
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      db.exec('PRAGMA optimize; PRAGMA wal_checkpoint(PASSIVE);');
+      return { prunedRecords: stale.length, prunedOutcomes };
+    },
     telemetry: async (now = Date.now()) => {
       const db = await open();
       const activeRecords = db.prepare('SELECT COUNT(*) AS count FROM breakout_records WHERE completed_at_ms IS NULL').get().count;

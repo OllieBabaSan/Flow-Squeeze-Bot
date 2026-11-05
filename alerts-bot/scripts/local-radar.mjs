@@ -33,6 +33,39 @@ let breakoutRuntime;
 let breakoutPersistBucket;
 let venueHealthRuntime;
 const hyperliquidBackoff = createRateLimitBackoff();
+let breakoutMaintenanceBucket;
+
+const delay = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
+async function mapSettledWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      try { results[index] = { status: 'fulfilled', value: await worker(items[index], index) }; }
+      catch (reason) { results[index] = { status: 'rejected', reason }; }
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+async function fetchJsonWithRetry(url, { attempts = 3, timeoutMs = 7000 } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (response.ok) return { body: await response.json(), attempts: attempt };
+      const error = new Error(`HTTP ${response.status}`);
+      error.retryable = response.status === 429 || response.status >= 500;
+      throw error;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts || error.retryable === false) break;
+      await delay(200 * (2 ** (attempt - 1)) + Math.floor(Math.random() * 100));
+    }
+  }
+  throw lastError;
+}
 
 async function environment() {
   for (const file of ['.env.local', '.env']) try {
@@ -126,15 +159,18 @@ async function markets(now) {
         const turnover = Number(tickerBySymbol.get(row.symbol)?.quoteVolume || 0);
         return hyperliquidSymbols.has(symbol) && turnover >= 10_000_000 && turnover <= 500_000_000;
       });
-      const oiResults = await Promise.allSettled(eligibleContracts.map(async row => {
-        const response = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${encodeURIComponent(row.symbol)}`, { signal: AbortSignal.timeout(12000) });
-        if (!response.ok) throw new Error(`${row.symbol} HTTP ${response.status}`);
-        return response.json();
-      }));
+      const requestedOiConcurrency = Number(process.env.BINANCE_OI_CONCURRENCY || 8);
+      const oiConcurrency = Number.isFinite(requestedOiConcurrency) ? Math.max(2, Math.min(12, requestedOiConcurrency)) : 8;
+      const oiResults = await mapSettledWithConcurrency(eligibleContracts, oiConcurrency, async row => {
+        const result = await fetchJsonWithRetry(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${encodeURIComponent(row.symbol)}`);
+        return { ...result.body, requestAttempts: result.attempts };
+      });
       rows.push(...normalizeBinanceMarkets({ tickers, premiums, openInterests: oiResults.flatMap(result => result.status === 'fulfilled' ? [result.value] : []), symbols: eligibleContracts }, now));
       const oiFailures = oiResults.filter(result => result.status === 'rejected').length;
+      const retriedRequests = oiResults.filter(result => result.status === 'fulfilled' && Number(result.value.requestAttempts) > 1).length;
+      const retryAttempts = oiResults.reduce((sum, result) => sum + (result.status === 'fulfilled' ? Math.max(0, Number(result.value.requestAttempts) - 1) : 0), 0);
       if (oiFailures) failures.push(`Binance: ${oiFailures}/${oiResults.length} open-interest requests failed`);
-      venueReports.push({ venue: 'Binance', status: oiFailures ? 'PARTIAL' : 'HEALTHY', marketCount: rows.filter(market => market.venue === 'Binance').length, durationMs: Date.now() - venueStartedAt, failedRequests: oiFailures, totalRequests: oiResults.length });
+      venueReports.push({ venue: 'Binance', status: oiFailures ? 'PARTIAL' : 'HEALTHY', marketCount: rows.filter(market => market.venue === 'Binance').length, durationMs: Date.now() - venueStartedAt, failedRequests: oiFailures, totalRequests: oiResults.length, retriedRequests, retryAttempts, concurrency: oiConcurrency });
     } catch (error) {
       failures.push(`Binance: ${error.message || error}`);
       venueReports.push({ venue: 'Binance', status: 'FAILED', marketCount: 0, durationMs: Date.now() - venueStartedAt, error: error.message || String(error) });
@@ -212,6 +248,11 @@ async function breakoutActivity(market, now = Date.now()) {
     if (!response.ok) throw new Error(`Bybit breakout candles HTTP ${response.status}`);
     const body = await response.json();
     candles = (body?.result?.list || []).map(row => ({ start: Number(row[0]), turnover: Number(row[6] || 0) }));
+  } else if (market.venue === 'Binance') {
+    const venueSymbol = market.venueSymbol || `${market.symbol}USDT`;
+    const response = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(venueSymbol)}&interval=5m&limit=25`, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`Binance breakout candles HTTP ${response.status}`);
+    candles = (await response.json()).map(row => ({ start: Number(row[0]), turnover: Number(row[7] || 0) }));
   } else if (market.venue === 'Hyperliquid') {
     const response = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'candleSnapshot', req: { coin: market.symbol, interval: '5m', startTime: now - 3 * 3600_000, endTime: now } }), signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error(`Hyperliquid breakout candles HTTP ${response.status}`);
@@ -281,6 +322,11 @@ async function scan() {
     if (cmcClient) try { liquidationEvidence = await cmcClient.liquidationEvidence(position.symbol, position.direction); } catch (error) { await log(`liquidation_evidence_unavailable symbol=${position.symbol} error=${error.message || error}`); }
     const update = evaluateFlowFollowUp(position, market, liquidationEvidence, now); if (!update) continue;
     Object.assign(position, { peakDirectedMovePct: update.evidence.peakDirectedMovePct, stage: update.stage, updatedAt: now });
+    if (update.event === 'SQUEEZE_CONFIRMED') position.confirmedAt = now;
+    if ('exhaustionCandidateAt' in update) {
+      if (update.exhaustionCandidateAt == null) delete position.exhaustionCandidateAt;
+      else position.exhaustionCandidateAt = update.exhaustionCandidateAt;
+    }
     if (update.event && !dryRun) { const discordReceipt = await discord(`${update.event.replaceAll('_', ' ')} · ${position.direction} · ${position.symbol}`, 'Follow-up to the earlier squeeze-pressure alert.', [{ name: 'Price since alert', value: `${update.evidence.directedMovePct.toFixed(2)}%` }, { name: 'Open-interest change', value: update.evidence.oiChangePct == null ? 'Unavailable' : `${update.evidence.oiChangePct.toFixed(2)}%` }], position.direction); await ledger.append({ type: 'flow_follow_up', id, event: update.event, evidence: update.evidence, discordReceipt }); }
     if (update.stage === 'CLOSED') delete state.flowTracking[id];
   }
@@ -308,6 +354,14 @@ async function scan() {
     if (!market.shadow && isFlowPriceCandidate(market, previous, now)) try { market = await enrich(market, previous.observedAt); } catch (error) { await log(`enrichment_failed ${key} ${error.message}`); }
     let rawDetection;
     const candidate = !market.shadow ? state.flowCandidates[key] : null;
+    let confirmationCandidateId = null;
+    let confirmationDispositionRecorded = false;
+    const recordConfirmationDisposition = async (status, details = {}) => {
+      if (!confirmationCandidateId || confirmationDispositionRecorded) return;
+      confirmationDispositionRecorded = true;
+      await ledger.append({ type: 'confirmation_disposition', id: confirmationCandidateId, status, key, ...details });
+      await log(`flow_confirmation_disposition ${key} status=${status}${details.reason ? ` reason=${details.reason}` : ''}`);
+    };
     if (candidate) {
       const confirmation = evaluateFlowConfirmation(candidate, market, now);
       candidate.peakDirectedMovePct = confirmation.metrics.peakDirectedMovePct;
@@ -322,6 +376,7 @@ async function scan() {
         state.snapshots[key] = market; continue;
       }
       rawDetection = { ...candidate.detection, confirmation };
+      confirmationCandidateId = candidate.id;
       await log(`flow_confirmation_passed ${key} direction=${candidate.direction} move=${confirmation.metrics.movePct.toFixed(2)} age=${confirmation.metrics.ageSeconds.toFixed(0)}s`);
     } else {
       rawDetection = detectFlowIgnition(market, previous, now);
@@ -346,10 +401,14 @@ async function scan() {
       const record = { schemaVersion: 1, detectorVersion: 'flow-ignition-v2-regime-v1', signalId: id, publicationStatus: 'REGIME_SUPPRESSED', createdAt, recordedAt: new Date().toISOString(), market, detection };
       const writes = await Promise.allSettled([ledger.delivery(id, 'regime-suppressed'), writeFile(paths.regimeShadow, `${JSON.stringify(record)}\n`, { flag: 'a' })]);
       const failure = writes.find(result => result.status === 'rejected'); if (failure) throw failure.reason;
+      await recordConfirmationDisposition('REGIME_SUPPRESSED', { reason: regimePolicy.reason, regime: regime.state, shadowId: id });
       regimeSuppressed++; await log(`regime_suppressed ${key} direction=${detection.direction} regime=${regime.state} reason=${regimePolicy.reason}`);
     }
     if (detection.eligible && !(recent && now - recent < alertCooldownMs)) {
-      if (!regimePolicy.publish) { state.snapshots[key] = market; continue; }
+      if (!regimePolicy.publish) {
+        await recordConfirmationDisposition('REGIME_SUPPRESSED', { reason: regimePolicy.reason, regime: regime.state });
+        state.snapshots[key] = market; continue;
+      }
       const identity = await resolveTrackedToken(market.symbol, { referencePrice: market.price });
       if (identity && (!isMemeToken(identity) || hasVerifiedContract(identity))) {
         const id = `${market.shadow ? 'flow-shadow' : 'flow'}:${key}:${now}`; const createdAt = new Date(now).toISOString();
@@ -363,6 +422,7 @@ async function scan() {
           const writes = await Promise.allSettled([ledger.delivery(id, 'shadow'), historyWrite()]);
           const failure = writes.find(result => result.status === 'rejected');
           if (failure) throw failure.reason;
+          await recordConfirmationDisposition('SHADOW_RECORDED', { alertId: id });
           await log(`shadow_candidate ${key} direction=${detection.direction}`);
         } else if (!dryRun) {
           const discordReceipt = await initial(market, detection, identity, rows);
@@ -371,13 +431,19 @@ async function scan() {
           const writes = await Promise.allSettled([ledger.delivery(id, 'sent', { discordReceipt }), historyWrite()]);
           const failure = writes.find(result => result.status === 'rejected');
           if (failure) throw failure.reason;
+          await recordConfirmationDisposition('PUBLISHED', { alertId: id, discordMessageId: discordReceipt?.messageId || null });
           sent++;
         } else {
           const writes = await Promise.allSettled([ledger.delivery(id, 'dry-run'), historyWrite()]);
           const failure = writes.find(result => result.status === 'rejected');
           if (failure) throw failure.reason;
+          await recordConfirmationDisposition('DRY_RUN', { alertId: id });
         }
+      } else {
+        await recordConfirmationDisposition('TOKEN_IDENTITY_REJECTED', { reason: !identity ? 'TOKEN_IDENTITY_UNRESOLVED' : 'MEME_CONTRACT_UNVERIFIED' });
       }
+    } else if (confirmationCandidateId) {
+      await recordConfirmationDisposition('COOLDOWN_SUPPRESSED', { reason: 'RECENT_SYMBOL_ALERT' });
     }
     state.snapshots[key] = market;
   }
@@ -396,7 +462,7 @@ async function scan() {
     const observation = { ...observationBase, qualityGate };
     const admission = await breakoutStore.reserve({ id, episodeKey: `${key}:${breakout.direction}:${episode.firstSeenAt}`, symbol: market.symbol, direction: breakout.direction, entryPrice: market.price, entryAt: createdAt, quoteKey: key, venue: market.venue, trigger: observation });
     if (!admission.admitted) { await log(`breakout_shadow_suppressed ${key} reason=${admission.reason}`); continue; }
-    const record = { schemaVersion: 1, detectorVersion: 'breakout-observer-v1-quality-shadow-v1', signalId: id, publicationStatus: 'SHADOW_ONLY', createdAt, recordedAt: new Date().toISOString(), market, observation };
+    const record = { schemaVersion: 1, detectorVersion: 'breakout-observer-v1-quality-shadow-v2', signalId: id, publicationStatus: 'SHADOW_ONLY', createdAt, recordedAt: new Date().toISOString(), market, observation };
     const writes = await Promise.allSettled([breakoutStore.delivery(id, 'breakout-shadow'), writeFile(paths.breakoutShadow, `${JSON.stringify(record)}\n`, { flag: 'a' })]);
     const failure = writes.find(result => result.status === 'rejected'); if (failure) throw failure.reason;
     episode.recorded = true;
@@ -426,7 +492,18 @@ async function scan() {
   }));
   if (flowEnabled) await ledger.observe('flow', quotes, now);
   let breakoutTelemetry = null;
-  if (breakoutEnabled) { await breakoutStore.observe(quotes, now); breakoutTelemetry = await breakoutStore.telemetry(now); }
+  if (breakoutEnabled) {
+    await breakoutStore.observe(quotes, now);
+    const maintenanceBucket = Math.floor(now / 86400_000);
+    if (breakoutMaintenanceBucket !== maintenanceBucket) {
+      const requestedRetentionDays = Number(process.env.BREAKOUT_RETENTION_DAYS || 90);
+      const retentionDays = Number.isFinite(requestedRetentionDays) ? Math.max(30, requestedRetentionDays) : 90;
+      const maintenance = await breakoutStore.maintain({ completedBeforeMs: now - retentionDays * 86400_000 });
+      breakoutMaintenanceBucket = maintenanceBucket;
+      await log(`breakout_maintenance retentionDays=${retentionDays} prunedRecords=${maintenance.prunedRecords} prunedOutcomes=${maintenance.prunedOutcomes}`);
+    }
+    breakoutTelemetry = await breakoutStore.telemetry(now);
+  }
   const memory = process.memoryUsage();
   await log(`role=${runtimeRole} markets=${rows.length} ${venueSummary} venueHealth=${venueHealthSummary(venueHealthRuntime)} regime=${regime.state} benchmark24h=${regime.benchmarkChangePct?.toFixed?.(2) ?? 'n/a'} negativeBreadth=${regime.negativeBreadthRatio == null ? 'n/a' : (regime.negativeBreadthRatio * 100).toFixed(1) + '%'} alerts=${sent} breakoutObserved=${breakoutObserved} breakoutWarming=${breakoutEnabled ? Object.values(breakoutRuntime.series).filter(series => (series.bars?.length || 0) < 21).length : 0} breakoutActiveRecords=${breakoutTelemetry?.activeRecords ?? 0} breakoutCreatedLastHour=${breakoutTelemetry?.createdLastHour ?? 0} breakoutDbBytes=${breakoutTelemetry?.databaseBytes ?? 0} rssBytes=${memory.rss} heapUsedBytes=${memory.heapUsed} confirmationStarted=${confirmationStarted} confirmationRejected=${confirmationRejected} confirmationPending=${Object.keys(state.flowCandidates).length} regimeSuppressed=${regimeSuppressed}${rows.failures?.length ? ` failures=${rows.failures.join('|')}` : ''}${dryRun ? ' dry-run' : ''}`);
 }

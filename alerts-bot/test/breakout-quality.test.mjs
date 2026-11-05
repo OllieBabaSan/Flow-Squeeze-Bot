@@ -22,3 +22,15 @@ test('penalizes countertrend, low-activity, extended observations', () => {
   assert.ok(result.flags.includes('BROADER_TREND_OPPOSED'));
   assert.ok(result.flags.includes('FRONT_LOADED_MOMENTUM'));
 });
+
+test('separates missing activity from scored quality cohorts', () => {
+  const result = evaluateBreakoutQuality({ observation: observation({ relativeActivity: null }), market: { change24hPct: 2 }, regime: { state: 'NEUTRAL' } });
+  assert.equal(result.status, 'ACTIVITY_MISSING_SHADOW');
+  assert.ok(result.flags.includes('ACTIVITY_UNAVAILABLE'));
+});
+
+test('does not reward extreme activity or severe risk-off conditions', () => {
+  const normal = evaluateBreakoutQuality({ observation: observation({ relativeActivity: 1.4 }), market: { change24hPct: 2 }, regime: { state: 'NEUTRAL' } });
+  const extreme = evaluateBreakoutQuality({ observation: observation({ relativeActivity: 5 }), market: { change24hPct: 2 }, regime: { state: 'SEVERE_RISK_OFF' } });
+  assert.ok(normal.score > extreme.score);
+});

@@ -41,7 +41,12 @@ Flow/Squeeze Automation product.
 
 Squeeze Pressure is not called a confirmed squeeze until follow-up evidence
 supports covering or forced liquidations while price continues against the
-crowded side.
+crowded side. Exhaustion requires a reversal that persists for several minutes;
+a single early giveback does not close a confirmed squeeze.
+
+The optional breakout observer is research-only. Its versioned quality gate
+keeps missing-activity observations in a separate cohort, and completed research
+records are retained for 90 days by default before daily pruning.
 
 ## Security
 

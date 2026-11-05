@@ -112,7 +112,7 @@ export function buildBreakoutFeed({ active = [], destinationCatalogs = {}, regim
   const bearish = selectForFeed(bearishCandidates, limitPerSide);
   return {
     schemaVersion: 1,
-    detectorVersion: 'breakout-observer-v1-live-feed-v3-quality-shadow',
+    detectorVersion: 'breakout-observer-v1-live-feed-v4-quality-shadow-v2',
     supportedDestinations: ['Bybit', 'Hyperliquid', 'Binance'],
     generatedAt: new Date(now).toISOString(),
     scanIntervalSeconds,

@@ -1,6 +1,6 @@
-export const BREAKOUT_QUALITY_VERSION = 'breakout-quality-shadow-v1';
+export const BREAKOUT_QUALITY_VERSION = 'breakout-quality-shadow-v2';
 
-const finite = value => Number.isFinite(Number(value));
+const finite = value => value !== null && value !== '' && Number.isFinite(Number(value));
 const points = (components, name, value) => { components[name] = value; return value; };
 
 export function evaluateBreakoutQuality({ observation = {}, market = {}, regime = {} } = {}) {
@@ -16,48 +16,50 @@ export function evaluateBreakoutQuality({ observation = {}, market = {}, regime 
   const broadDirected = change24h == null ? null : change24h * (direction === 'BEARISH' ? -1 : 1);
 
   let score = 0;
-  score += points(components, 'openInterest', observation.derivativesContext === 'EXPANDING_OPEN_INTEREST' ? 20
-    : observation.derivativesContext === 'STABLE_OPEN_INTEREST' ? 8
-      : observation.derivativesContext === 'CONTRACTING_OPEN_INTEREST' ? 3 : 0);
+  score += points(components, 'openInterest', observation.derivativesContext === 'EXPANDING_OPEN_INTEREST' ? 14
+    : observation.derivativesContext === 'CONTRACTING_OPEN_INTEREST' ? 10
+      : observation.derivativesContext === 'STABLE_OPEN_INTEREST' ? 6 : 0);
   if (observation.derivativesContext === 'UNAVAILABLE') flags.push('OPEN_INTEREST_UNAVAILABLE');
 
-  score += points(components, 'relativeActivity', activity == null ? 0 : activity >= 1.5 ? 20 : activity >= 0.8 ? 11 : 4);
+  score += points(components, 'relativeActivity', activity == null ? 0 : activity >= 1 && activity < 2 ? 14 : activity >= 0.8 && activity < 3 ? 10 : activity >= 3 ? 6 : 2);
   if (activity == null) flags.push('ACTIVITY_UNAVAILABLE');
   else if (activity < 0.8) flags.push('LOW_RELATIVE_ACTIVITY');
 
   const momentumAligned = momentum15 != null && momentum60 != null && momentum15 > 0 && momentum60 > 0;
-  score += points(components, 'trendAlignment', momentumAligned ? 16 : (momentum15 ?? -1) > 0 || (momentum60 ?? -1) > 0 ? 7 : 0);
+  score += points(components, 'trendAlignment', momentumAligned ? 14 : (momentum15 ?? -1) > 0 || (momentum60 ?? -1) > 0 ? 6 : 0);
   if (!momentumAligned) flags.push('INCOMPLETE_TREND_ALIGNMENT');
   if (broadDirected != null) {
-    score += points(components, 'broadTrend', broadDirected >= 0.25 ? 12 : broadDirected <= -0.25 ? -12 : 4);
+    score += points(components, 'broadTrend', broadDirected >= 0.25 ? 10 : broadDirected <= -0.25 ? -12 : 4);
     if (broadDirected <= -0.25) flags.push('BROADER_TREND_OPPOSED');
   } else {
     components.broadTrend = 0;
     flags.push('BROAD_TREND_UNAVAILABLE');
   }
 
-  score += points(components, 'clearance', clearance == null ? 0 : clearance >= 0.2 && clearance < 1 ? 14 : clearance >= 1 ? 5 : 2);
+  score += points(components, 'clearance', clearance == null ? 0 : clearance >= 0.2 && clearance < 0.5 ? 14 : clearance < 1 ? 10 : clearance >= 1 ? 4 : 2);
   if (clearance != null && clearance >= 1) flags.push('EXTENDED_CLEARANCE');
   score += points(components, 'channelStructure', channelWidth == null ? 0 : channelWidth >= 3 && channelWidth < 6 ? 10 : channelWidth < 3 ? 7 : 4);
   if (channelWidth != null && channelWidth >= 6) flags.push('WIDE_CHANNEL');
 
   const regimeAligned = regime.state === 'BEARISH' ? direction === 'BEARISH'
     : regime.state === 'BULLISH' ? direction === 'BULLISH' : null;
-  score += points(components, 'marketRegime', regimeAligned === true ? 12 : regimeAligned === false ? -10 : regime.state === 'NEUTRAL' ? 7 : 0);
+  score += points(components, 'marketRegime', regime.state === 'NEUTRAL' ? 12
+    : regime.state === 'SEVERE_RISK_OFF' ? -8
+      : regimeAligned === true ? 8 : regimeAligned === false ? -12 : 0);
   if (regimeAligned === false) flags.push('REGIME_COUNTERTREND');
 
   const funding = finite(observation.fundingRate) ? Number(observation.fundingRate) : null;
-  const crowdOpposed = funding != null && ((direction === 'BULLISH' && funding < -0.0001) || (direction === 'BEARISH' && funding > 0.0001));
-  score += points(components, 'fundingContext', crowdOpposed ? 6 : funding == null ? 0 : 2);
+  score += points(components, 'fundingContext', funding == null ? 0 : 2);
   if (funding == null) flags.push('FUNDING_UNAVAILABLE');
 
   const frontLoaded = momentum15 != null && momentum60 != null && momentum15 >= 0.75 && momentum60 > 0 && momentum15 / momentum60 >= 0.75;
-  components.reversalRisk = frontLoaded ? -10 : 0;
+  components.reversalRisk = frontLoaded ? -12 : 0;
   score += components.reversalRisk;
   if (frontLoaded) flags.push('FRONT_LOADED_MOMENTUM');
 
   score = Math.max(0, Math.min(100, Math.round(score)));
-  const status = score >= 70 ? 'QUALIFIED_SHADOW' : score >= 50 ? 'WATCH_SHADOW' : 'LOW_QUALITY_SHADOW';
+  const status = activity == null ? 'ACTIVITY_MISSING_SHADOW'
+    : score >= 70 ? 'QUALIFIED_SHADOW' : score >= 50 ? 'WATCH_SHADOW' : 'LOW_QUALITY_SHADOW';
   return {
     version: BREAKOUT_QUALITY_VERSION,
     shadowOnly: true,

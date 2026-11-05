@@ -33,6 +33,9 @@ export function evaluateFlowFollowUp(position, market, liquidationEvidence, now 
     confirmationOiDropPct: 0.25,
     invalidationMovePct: 0.75,
     exhaustionGivebackPct: 0.75,
+    exhaustionDeepGivebackPct: 1.25,
+    minimumConfirmedMinutesBeforeExhaustion: 5,
+    exhaustionPersistenceMinutes: 3,
     maximumPressureMinutes: 120,
     maximumTrackingMinutes: 360,
     ...options,
@@ -61,11 +64,23 @@ export function evaluateFlowFollowUp(position, market, liquidationEvidence, now 
 
   if (position.stage === 'CONFIRMED') {
     const givebackPct = peakDirectedMovePct - directedMovePct;
-    if (givebackPct >= rules.exhaustionGivebackPct || directedMovePct <= 0) {
-      return { event: 'SQUEEZE_EXHAUSTION', stage: 'CLOSED', evidence: { ...evidence, givebackPct } };
+    const confirmedAt = Number(position.confirmedAt || position.entryAt);
+    const confirmedMinutes = Math.max(0, (now - confirmedAt) / 60000);
+    const fullyReversed = directedMovePct <= 0 && givebackPct >= rules.exhaustionGivebackPct;
+    const deeplyFaded = peakDirectedMovePct >= 1
+      && givebackPct >= Math.max(rules.exhaustionDeepGivebackPct, peakDirectedMovePct * 0.75)
+      && directedMovePct <= peakDirectedMovePct * 0.25;
+    const exhaustionCandidate = fullyReversed || deeplyFaded;
+    const exhaustionCandidateAt = exhaustionCandidate ? Number(position.exhaustionCandidateAt || now) : null;
+    const exhaustionPersistenceMinutes = exhaustionCandidateAt == null ? 0 : (now - exhaustionCandidateAt) / 60000;
+    const exhaustionEvidence = { ...evidence, givebackPct, confirmedMinutes, exhaustionPersistenceMinutes };
+    if (exhaustionCandidate
+      && confirmedMinutes >= rules.minimumConfirmedMinutesBeforeExhaustion
+      && exhaustionPersistenceMinutes >= rules.exhaustionPersistenceMinutes) {
+      return { event: 'SQUEEZE_EXHAUSTION', stage: 'CLOSED', exhaustionCandidateAt, evidence: exhaustionEvidence };
     }
     if (elapsedMinutes >= rules.maximumTrackingMinutes) return { event: 'SQUEEZE_TRACKING_ENDED', stage: 'CLOSED', evidence };
-    return { event: null, stage: 'CONFIRMED', evidence };
+    return { event: null, stage: 'CONFIRMED', exhaustionCandidateAt, evidence: exhaustionEvidence };
   }
   return null;
 }
