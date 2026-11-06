@@ -35,6 +35,44 @@ let breakoutPersistBucket;
 let venueHealthRuntime;
 const hyperliquidBackoff = createRateLimitBackoff();
 let breakoutMaintenanceBucket;
+const CMC_LIQUIDATION_CHECKPOINT_MINUTES = [2, 5, 10, 15, 30, 60, 120];
+
+function nextCmcLiquidationCheckpoint(position, now) {
+  if (!Object.hasOwn(position, 'cmcLiquidationBaseline')) return 0;
+  const completed = position.cmcLiquidationCheckpoints || {};
+  const elapsedMinutes = Math.max(0, (now - Number(position.entryAt)) / 60000);
+  return CMC_LIQUIDATION_CHECKPOINT_MINUTES.find(minutes => elapsedMinutes >= minutes && !completed[minutes]) ?? null;
+}
+
+function compactCmcExchangeContext(context, previous) {
+  const tracked = new Set(['binance', 'bybit', 'hyperliquid', 'okx', 'bitget']);
+  const aggregateOpenInterestUsd = Number(context.aggregateOpenInterestUsd || 0);
+  const previousOpenInterestUsd = Number(previous?.aggregateOpenInterestUsd || 0);
+  return {
+    schemaVersion: 1,
+    detectorVersion: 'cmc-derivatives-context-v1',
+    publicationStatus: 'SHADOW_ONLY',
+    capturedAt: context.capturedAt,
+    latestUpdated: context.latestUpdated,
+    exchangeCount: context.exchangeCount,
+    aggregateOpenInterestUsd,
+    aggregateDerivativeVolumeUsd: Number(context.aggregateDerivativeVolumeUsd || 0),
+    openInterestChangePct: previousOpenInterestUsd > 0 ? (aggregateOpenInterestUsd / previousOpenInterestUsd - 1) * 100 : null,
+    previousCapturedAt: previous?.capturedAt || null,
+    trackedExchanges: context.exchanges.filter(row => tracked.has(String(row.slug || '').toLowerCase())),
+  };
+}
+
+function numericSetting(value, fallback, minimum) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, parsed) : fallback;
+}
+
+function cmcCryptoId(position) {
+  const provider = String(position?.tokenIdentity?.provider || '');
+  const id = String(position?.tokenIdentity?.id || '');
+  return provider.startsWith('CoinMarketCap') && /^\d+$/.test(id) ? id : null;
+}
 
 async function environment() {
   for (const file of ['.env.local', '.env']) try {
@@ -279,7 +317,11 @@ async function scan() {
   delete state.breakoutSeries; delete state.breakoutObserved;
   const breakoutBucket = Math.floor(now / (5 * 60_000));
   const alertCooldownMs = flowAlertCooldownMs();
-  if (!cmcClient && process.env.COINMARKETCAP_API_KEY) cmcClient = createCmcDerivativesClient({ apiKey: process.env.COINMARKETCAP_API_KEY });
+  if (!cmcClient && process.env.COINMARKETCAP_API_KEY) cmcClient = createCmcDerivativesClient({
+    apiKey: process.env.COINMARKETCAP_API_KEY,
+    exchangeContextCacheMs: numericSetting(process.env.CMC_CONTEXT_INTERVAL_MINUTES, 15, 5) * 60_000,
+    monthlyCreditReserve: numericSetting(process.env.CMC_MONTHLY_CREDIT_RESERVE, 1500, 500),
+  });
   void refreshPerpDexCatalogs({ now }).catch(() => []);
   const rows = await markets(now);
   venueHealthRuntime ||= await readJsonWithBackup(paths.venueHealth, { venues: {} });
@@ -291,10 +333,36 @@ async function scan() {
   const byKey = new Map(rows.map(row => [`${row.venue}:${row.symbol}`, row]));
   const quotes = new Map(); const breakoutQueue = []; const activeBreakouts = [];
   let sent = 0; let regimeSuppressed = 0; let confirmationStarted = 0; let confirmationRejected = 0; let breakoutObserved = 0;
+  const trackedPositions = flowEnabled ? Object.values(state.flowTracking) : [];
+  const cmcDuePositions = trackedPositions.filter(position => nextCmcLiquidationCheckpoint(position, now) != null);
+  let cmcLiquidationsReady = false;
+  if (cmcClient && cmcDuePositions.length) try {
+    await cmcClient.primeLiquidations({ force: true });
+    cmcLiquidationsReady = true;
+  } catch (error) {
+    await log(`liquidation_evidence_unavailable error=${error.message || error}`);
+  }
   for (const [id, position] of flowEnabled ? Object.entries(state.flowTracking) : []) {
     const market = byKey.get(position.quoteKey); if (!market) continue;
-    let liquidationEvidence = null;
-    if (cmcClient) try { liquidationEvidence = await cmcClient.liquidationEvidence(position.symbol, position.direction); } catch (error) { await log(`liquidation_evidence_unavailable symbol=${position.symbol} error=${error.message || error}`); }
+    const cmcCheckpointMinutes = nextCmcLiquidationCheckpoint(position, now);
+    if (cmcClient && cmcLiquidationsReady && cmcCheckpointMinutes != null) {
+      const current = cmcClient.peekLiquidationEvidence(position.symbol, position.direction, { cryptoId: cmcCryptoId(position) });
+      position.cmcLiquidationCheckpoints ||= {};
+      if (cmcCheckpointMinutes === 0) {
+        position.cmcLiquidationBaseline = current;
+        position.cmcLiquidationCheckpoints.baseline = current.capturedAt || new Date(now).toISOString();
+        position.cmcLiquidationEvidence = { available: false, source: 'POST_ALERT_DELTA', reason: 'BASELINE_ESTABLISHED' };
+      } else {
+        position.cmcLiquidationEvidence = cmcClient.liquidationDeltaEvidence(current, position.cmcLiquidationBaseline, position.direction);
+        position.cmcLiquidationCheckpoints[cmcCheckpointMinutes] = current.capturedAt || new Date(now).toISOString();
+      }
+      await ledger.append({
+        type: 'cmc_candidate_context', detectorVersion: 'cmc-derivatives-context-v1', publicationStatus: 'SHADOW_ONLY',
+        id, symbol: position.symbol, direction: position.direction, checkpointMinutes: cmcCheckpointMinutes,
+        baseline: position.cmcLiquidationBaseline, current, delta: position.cmcLiquidationEvidence,
+      });
+    }
+    const liquidationEvidence = position.cmcLiquidationEvidence || { available: false, source: 'POST_ALERT_DELTA', reason: 'BASELINE_PENDING' };
     const update = evaluateFlowFollowUp(position, market, liquidationEvidence, now); if (!update) continue;
     Object.assign(position, { peakDirectedMovePct: update.evidence.peakDirectedMovePct, stage: update.stage, updatedAt: now });
     if (update.event === 'SQUEEZE_CONFIRMED') position.confirmedAt = now;
@@ -442,6 +510,33 @@ async function scan() {
     const failure = writes.find(result => result.status === 'rejected'); if (failure) throw failure.reason;
     episode.recorded = true;
     breakoutObserved++; await log(`breakout_shadow ${key} direction=${breakout.direction} clearanceAtr=${breakout.clearanceAtr.toFixed(2)} oiContext=${breakout.derivativesContext} relativeActivity=${activity.relativeActivity == null ? 'n/a' : activity.relativeActivity.toFixed(2)} quality=${qualityGate.score} qualityStatus=${qualityGate.status}`);
+  }
+  // CMC is secondary research context. It runs after the publication loop so
+  // its latency or failure can never delay an alert in the current scan.
+  if (flowEnabled && cmcClient) try {
+    const currentContext = await cmcClient.exchangeContext();
+    if (currentContext.capturedAt !== state.cmcDerivativesContext?.capturedAt) {
+      const compact = compactCmcExchangeContext(currentContext, state.cmcDerivativesContext);
+      state.cmcDerivativesContext = compact;
+      await ledger.append({ type: 'cmc_derivatives_context', ...compact });
+      await log(`cmc_derivatives_context exchanges=${compact.exchangeCount} aggregateOiUsd=${compact.aggregateOpenInterestUsd.toFixed(0)} oiChangePct=${compact.openInterestChangePct == null ? 'n/a' : compact.openInterestChangePct.toFixed(4)}`);
+    }
+  } catch (error) {
+    await log(`cmc_derivatives_context_unavailable error=${error.message || error}`);
+  }
+  const unenrichedPosition = flowEnabled && cmcClient
+    ? Object.values(state.flowTracking).find(position => !Object.hasOwn(position, 'cmcDerivativesEvidence'))
+    : null;
+  if (unenrichedPosition) try {
+    const derivativesEvidence = await cmcClient.derivativesEvidence(unenrichedPosition.symbol, { cryptoId: cmcCryptoId(unenrichedPosition) });
+    unenrichedPosition.cmcDerivativesEvidence = derivativesEvidence;
+    await ledger.append({
+      type: 'cmc_candidate_derivatives_context', detectorVersion: 'cmc-derivatives-context-v1', publicationStatus: 'SHADOW_ONLY',
+      id: unenrichedPosition.id, symbol: unenrichedPosition.symbol, direction: unenrichedPosition.direction, derivativesEvidence,
+    });
+  } catch (error) {
+    unenrichedPosition.cmcDerivativesEvidence = { available: false, error: String(error.message || error), capturedAt: new Date(now).toISOString() };
+    await log(`cmc_candidate_derivatives_context_unavailable symbol=${unenrichedPosition.symbol} error=${error.message || error}`);
   }
   const keep = now - 24 * 3600_000; state.symbolAlerted = Object.fromEntries(Object.entries(state.symbolAlerted).filter(([, at]) => at >= keep)); state.shadowAlerted = Object.fromEntries(Object.entries(state.shadowAlerted).filter(([, at]) => at >= keep)); state.regimeSuppressed = Object.fromEntries(Object.entries(state.regimeSuppressed).filter(([, at]) => at >= keep)); state.confirmationRejected = Object.fromEntries(Object.entries(state.confirmationRejected).filter(([, at]) => at >= now - 3600_000)); state.flowCandidates = Object.fromEntries(Object.entries(state.flowCandidates).filter(([, item]) => now - Number(item.detectedAt) <= 10 * 60_000)); state.flowTracking = Object.fromEntries(Object.entries(state.flowTracking).filter(([, item]) => Number(item.entryAt) >= keep));
   if (breakoutEnabled) {

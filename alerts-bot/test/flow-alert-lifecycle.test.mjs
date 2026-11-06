@@ -25,10 +25,12 @@ test('confirms a bullish squeeze when price rises and short covering reduces ope
   assert.equal(result.stage, 'CONFIRMED');
 });
 
-test('accepts direction-aligned liquidation evidence as confirmation', () => {
+test('ignores pre-alert liquidation totals and accepts fresh post-alert liquidation growth', () => {
   const position = createFlowTrackingPosition({ id: 'a', market, detection: { direction: 'BEARISH', reason: 'crowded_longs' }, tokenIdentity: {}, now: 0 });
-  const result = evaluateFlowFollowUp(position, { ...market, price: 99, openInterest: 10_100 }, { available: true, alignment: 'ALIGNED' }, 20 * 60_000);
-  assert.equal(result.event, 'SQUEEZE_CONFIRMED');
+  const stale = evaluateFlowFollowUp(position, { ...market, price: 99, openInterest: 10_100 }, { available: true, alignment: 'ALIGNED' }, 20 * 60_000);
+  assert.equal(stale.event, null);
+  const relative = evaluateFlowFollowUp(position, { ...market, price: 99, openInterest: 10_100 }, { available: true, source: 'POST_ALERT_DELTA', freshSnapshot: true, alignment: 'ALIGNED' }, 20 * 60_000);
+  assert.equal(relative.event, 'SQUEEZE_CONFIRMED');
 });
 
 test('closes unconfirmed pressure and requires durable confirmed squeeze exhaustion', () => {

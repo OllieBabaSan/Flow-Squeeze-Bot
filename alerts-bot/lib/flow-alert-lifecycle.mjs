@@ -49,7 +49,11 @@ export function evaluateFlowFollowUp(position, market, liquidationEvidence, now 
     : null;
   const elapsedMinutes = (now - Number(position.entryAt)) / 60000;
   const peakDirectedMovePct = Math.max(Number(position.peakDirectedMovePct || 0), directedMovePct);
-  const liquidationConfirmed = liquidationEvidence?.alignment === 'ALIGNED';
+  // Rolling one-hour totals may predate this alert. Only a candidate-relative
+  // post-alert increase can independently count as liquidation confirmation.
+  const liquidationConfirmed = liquidationEvidence?.source === 'POST_ALERT_DELTA'
+    && liquidationEvidence?.freshSnapshot === true
+    && liquidationEvidence?.alignment === 'ALIGNED';
   const coveringConfirmed = oiChangePct != null && oiChangePct <= -rules.confirmationOiDropPct;
   const evidence = { directedMovePct, oiChangePct, elapsedMinutes, peakDirectedMovePct, liquidationEvidence };
 

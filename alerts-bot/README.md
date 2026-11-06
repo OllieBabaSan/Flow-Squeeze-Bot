@@ -44,6 +44,14 @@ supports covering or forced liquidations while price continues against the
 crowded side. Exhaustion requires a reversal that persists for several minutes;
 a single early giveback does not close a confirmed squeeze.
 
+When `COINMARKETCAP_API_KEY` is configured, each Squeeze Pressure candidate
+establishes its own liquidation baseline. Only fresh liquidation growth after
+the alert may confirm a squeeze; rolling totals that predate the alert cannot.
+Candidate snapshots are recorded at 2/5/10/15/30/60/120 minutes. The same API
+also records `cmc-derivatives-context-v1`, a shadow-only aggregate open-interest
+context every 15 minutes. A configurable monthly credit reserve fails closed
+before the API allowance is exhausted.
+
 The optional breakout observer is research-only. Its versioned quality gate
 keeps missing-activity observations in a separate cohort, and completed research
 records are retained for 90 days by default before daily pruning.
