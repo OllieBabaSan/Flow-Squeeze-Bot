@@ -7,6 +7,21 @@ const median = values => {
 };
 const TRUSTED_EXCHANGES = new Set(['binance', 'okx', 'bybit', 'kraken', 'hyperliquid', 'deribit', 'gate-io', 'gate']);
 
+export function normalizeCmcCreditStatus(data, monthlyCreditReserve = 1500) {
+  const month = data?.usage?.current_month || {};
+  const creditsUsed = finite(month.credits_used) ? Number(month.credits_used) : null;
+  const explicitLeft = finite(month.credits_left) ? Number(month.credits_left) : null;
+  const planLimit = finite(data?.plan?.credit_limit_monthly) ? Number(data.plan.credit_limit_monthly)
+    : finite(data?.plan?.credit_limit) ? Number(data.plan.credit_limit) : null;
+  const creditsLeft = explicitLeft ?? (planLimit != null && creditsUsed != null ? planLimit - creditsUsed : null);
+  return {
+    available: creditsLeft != null || creditsUsed != null,
+    creditsUsed, creditsLeft, monthlyCreditLimit: planLimit,
+    reserve: Number(monthlyCreditReserve),
+    reserveReached: creditsLeft != null ? creditsLeft <= Number(monthlyCreditReserve) : null,
+  };
+}
+
 function liquidationClassification(row, direction) {
   if (!row) return { available: false };
   const total1hUsd = Number(row.total_liquidations_1h || 0);
@@ -148,8 +163,8 @@ export function createCmcDerivativesClient({
       const data = await rawRequest('/v1/key/info');
       keyInfoCache = { at: timestamp, data };
     }
-    const creditsLeft = Number(keyInfoCache.data?.usage?.current_month?.credits_left);
-    if (Number.isFinite(creditsLeft) && creditsLeft <= monthlyCreditReserve) throw new Error(`CMC_CREDIT_RESERVE_REACHED creditsLeft=${creditsLeft}`);
+    const creditStatus = normalizeCmcCreditStatus(keyInfoCache.data, monthlyCreditReserve);
+    if (creditStatus.reserveReached) throw new Error(`CMC_CREDIT_RESERVE_REACHED creditsLeft=${creditStatus.creditsLeft}`);
     return keyInfoCache.data;
   };
   const request = async path => {
@@ -194,6 +209,7 @@ export function createCmcDerivativesClient({
     exchangeContext,
     peekExchangeContext: () => exchangeContextCache?.data || null,
     keyInfo: ensureCreditBudget,
+    creditStatus: async () => normalizeCmcCreditStatus(await ensureCreditBudget(), monthlyCreditReserve),
     derivativesEvidence: async (symbol, { cryptoId = null } = {}) => {
       const key = cryptoId ? `id:${cryptoId}` : `symbol:${String(symbol).toUpperCase()}`;
       const timestamp = now(), cached = derivativesCache.get(key);
