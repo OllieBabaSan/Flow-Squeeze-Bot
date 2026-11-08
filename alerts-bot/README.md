@@ -56,6 +56,22 @@ The optional breakout observer is research-only. Its versioned quality gate
 keeps missing-activity observations in a separate cohort, and completed research
 records are retained for 90 days by default before daily pruning.
 
+`breakout-admission-v1` bounds research storage without changing alerts or the
+live dashboard. It retains every `QUALIFIED_SHADOW` episode and deterministically
+samples `WATCH_SHADOW`, `LOW_QUALITY_SHADOW`, and `ACTIVITY_MISSING_SHADOW`
+controls at the rates in `.env.local`. A one-hour same-market/same-direction
+cooldown prevents repeated episodes from dominating the cohort. Every decision,
+including suppression, is written to `data/breakout-admission-shadow.jsonl` for
+audit. Admitted observations use the distinct
+`breakout-observer-v1-quality-shadow-v2-admission-v1` detector version.
+
+The `flow-fast-move-shadow-v1` cohort tests whether unusually strong Flow can be
+recognized safely before the ordinary 60-second confirmation point. It requires
+price acceleration, expanding open interest, meaningful fresh turnover, a tight
+spread, limited retracement, and market-regime alignment. It is deliberately
+research-only: it does not publish to Discord or change Automation entries.
+Run `npm run fast-move-paths` to review its matured paths.
+
 ## Security
 
 Never commit `.env.local`, webhook URLs, API keys, logs, or runtime state. This

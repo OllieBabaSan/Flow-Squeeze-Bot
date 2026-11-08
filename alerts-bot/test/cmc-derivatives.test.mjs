@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCmcDerivativesClient, derivativesSummary, exchangeDerivativesContext, liquidationClassification, liquidationDeltaEvidence } from '../lib/cmc-derivatives.mjs';
+import { createCmcDerivativesClient, derivativesSummary, exchangeDerivativesContext, liquidationClassification, liquidationDeltaEvidence, normalizeCmcCreditStatus } from '../lib/cmc-derivatives.mjs';
 
 test('classifies liquidation dominance relative to signal direction', () => {
   const row = { total_liquidations_1h: 300_000, long_liquidations_1h: 50_000, short_liquidations_1h: 250_000 };
@@ -68,4 +68,13 @@ test('stops credit-consuming requests at the configured monthly reserve', async 
   const client = createCmcDerivativesClient({ apiKey: 'test', fetchImpl, monthlyCreditReserve: 1500 });
   await assert.rejects(() => client.primeLiquidations(), /CMC_CREDIT_RESERVE_REACHED/);
   assert.equal(calls, 1);
+});
+
+test('reports CMC usage when credits_left must be derived from plan limit', () => {
+  assert.deepEqual(normalizeCmcCreditStatus({
+    plan: { credit_limit_monthly: 15_000 }, usage: { current_month: { credits_used: 225 } },
+  }, 1500), {
+    available: true, creditsUsed: 225, creditsLeft: 14_775, monthlyCreditLimit: 15_000,
+    reserve: 1500, reserveReached: false,
+  });
 });

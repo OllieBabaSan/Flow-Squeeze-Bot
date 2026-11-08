@@ -17,16 +17,24 @@ if (kind === 'breakout-shadow') {
   const database = new DatabaseSync(resolve(data, 'breakout-outcomes.sqlite3'), { readOnly: true });
   const rows = database.prepare('SELECT * FROM breakout_records WHERE entry_at_ms >= ? AND (? = \'\' OR status = ?)').all(since, status, status);
   const outcomeStatement = database.prepare('SELECT * FROM breakout_outcomes WHERE record_id = ? ORDER BY horizon_minutes');
-  records = rows.map(row => ({
-    id: row.id, kind, symbol: row.symbol, venue: row.venue, direction: row.direction,
-    entryPrice: row.entry_price, entryAt: new Date(row.entry_at_ms).toISOString(), status: row.status,
-    maxFavorablePct: row.max_favorable_pct, maxAdversePct: row.max_adverse_pct,
-    horizons: Object.fromEntries(outcomeStatement.all(row.id).map(outcome => [outcome.horizon_minutes, {
-      observedAt: new Date(outcome.observed_at_ms).toISOString(), price: outcome.price,
-      directedReturnPct: outcome.directed_return_pct, maxFavorablePct: outcome.max_favorable_pct,
-      maxAdversePct: outcome.max_adverse_pct,
-    }])),
-  }));
+  records = rows.map(row => {
+    let trigger = {};
+    try { trigger = JSON.parse(row.trigger_json || '{}'); } catch {}
+    return {
+      id: row.id, kind, symbol: row.symbol, venue: row.venue, direction: row.direction,
+      entryPrice: row.entry_price, entryAt: new Date(row.entry_at_ms).toISOString(), status: row.status,
+      maxFavorablePct: row.max_favorable_pct, maxAdversePct: row.max_adverse_pct,
+      detectorVersion: trigger.qualityGate?.version || null,
+      qualityStatus: trigger.qualityGate?.status || null,
+      qualityScore: trigger.qualityGate?.score ?? null,
+      qualityFlags: trigger.qualityGate?.flags || [],
+      horizons: Object.fromEntries(outcomeStatement.all(row.id).map(outcome => [outcome.horizon_minutes, {
+        observedAt: new Date(outcome.observed_at_ms).toISOString(), price: outcome.price,
+        directedReturnPct: outcome.directed_return_pct, maxFavorablePct: outcome.max_favorable_pct,
+        maxAdversePct: outcome.max_adverse_pct,
+      }])),
+    };
+  });
   database.close();
 } else {
   const active = JSON.parse(await readFile(resolve(data, 'flow-alert-outcomes.json'), 'utf8'));
