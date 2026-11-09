@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { analyzeAlertPath, summarizeAlertPaths } from '../lib/alert-path-analysis.mjs';
+import { indexConfirmationDispositions, reconcileConfirmationDisposition } from '../lib/confirmation-dispositions.mjs';
 
 const argumentValue = name => {
   const index = process.argv.indexOf(name);
@@ -43,7 +44,14 @@ if (kind === 'breakout-shadow') {
   const archived = archiveText.split(/\r?\n/).filter(Boolean).flatMap(line => {
     try { return [JSON.parse(line)]; } catch { return []; }
   });
-  const byId = new Map([...archived, ...Object.values(active.records || {})].map(record => [record.id, record]));
+  const ledgerText = await readFile(resolve(data, 'flow-alert-ledger.jsonl'), 'utf8').catch(() => '');
+  const ledgerEvents = ledgerText.split(/\r?\n/).filter(Boolean).flatMap(line => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+  const dispositionsById = indexConfirmationDispositions(ledgerEvents);
+  const reconciled = [...archived, ...Object.values(active.records || {})]
+    .map(record => reconcileConfirmationDisposition(record, dispositionsById));
+  const byId = new Map(reconciled.map(record => [record.id, record]));
   records = [...byId.values()].filter(record => record.kind === kind
     && (!status || record.status === status)
     && (!disposition || record.confirmationDisposition?.status === disposition)
