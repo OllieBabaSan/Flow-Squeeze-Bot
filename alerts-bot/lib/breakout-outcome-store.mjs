@@ -2,7 +2,7 @@ import { mkdir, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-export const BREAKOUT_HORIZONS = [1, 5, 15, 30, 60, 120];
+export const BREAKOUT_HORIZONS = [1, 3, 5, 10, 15, 30, 60, 120];
 
 export function createBreakoutOutcomeStore({ databasePath, maximumActiveRecords = 2000 } = {}) {
   let database;

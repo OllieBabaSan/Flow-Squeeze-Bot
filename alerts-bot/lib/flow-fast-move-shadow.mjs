@@ -13,6 +13,22 @@ export const FLOW_FAST_MOVE_SHADOW_DEFAULTS = {
   maximumRetracementFromPeakPct: 0.25,
 };
 
+export function updateFastMoveEvaluationTelemetry(previous = {}, evaluation, now = Date.now()) {
+  const reason = String(evaluation?.reason || 'UNKNOWN');
+  return {
+    evaluations: Number(previous.evaluations || 0) + 1,
+    firstEvaluatedAt: previous.firstEvaluatedAt || new Date(now).toISOString(),
+    lastEvaluatedAt: new Date(now).toISOString(),
+    lastAction: evaluation?.action || 'UNKNOWN',
+    lastReason: reason,
+    lastMetrics: evaluation?.metrics || null,
+    reasonCounts: {
+      ...(previous.reasonCounts || {}),
+      [reason]: Number(previous.reasonCounts?.[reason] || 0) + 1,
+    },
+  };
+}
+
 const finite = value => value !== null && value !== '' && Number.isFinite(Number(value));
 
 export function evaluateFastMoveShadow(candidate, market, regime = {}, now = Date.now(), options = {}) {

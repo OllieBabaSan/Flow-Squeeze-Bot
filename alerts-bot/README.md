@@ -52,6 +52,10 @@ also records `cmc-derivatives-context-v1`, a shadow-only aggregate open-interest
 context every 15 minutes. A configurable monthly credit reserve fails closed
 before the API allowance is exhausted.
 
+An invalidated Squeeze Pressure alert stops producing Discord follow-ups, but it
+remains in silent CMC research tracking through the 120-minute checkpoint. This
+separates user-facing lifecycle closure from evidence collection.
+
 The optional breakout observer is research-only. Its versioned quality gate
 keeps missing-activity observations in a separate cohort, and completed research
 records are retained for 90 days by default before daily pruning.
@@ -71,6 +75,23 @@ price acceleration, expanding open interest, meaningful fresh turnover, a tight
 spread, limited retracement, and market-regime alignment. It is deliberately
 research-only: it does not publish to Discord or change Automation entries.
 Run `npm run fast-move-paths` to review its matured paths.
+
+Every confirmation candidate receives the same outcome horizons whether it is
+passed, rejected, or later suppressed. Run `npm run confirmation-passed-paths`
+and `npm run confirmation-rejected-paths` for matched comparisons. Fast-move
+evaluation summaries, including every nonqualifying reason encountered before
+confirmation resolves, are written to `data/flow-fast-move-evaluations.jsonl`.
+Breakout observations record 1/3/5/10/15/30/60/120-minute checkpoints.
+
+The breakout feed reports raw and eligible market coverage by source venue. A
+fresh, locally persisted Hyperliquid symbol universe may be used for up to six
+hours during a temporary Hyperliquid metadata outage; stale or missing caches
+fail closed so overlap venues cannot silently expand the execution universe.
+
+Confirmation resolutions also record same-symbol prices already observed from
+other venues. This cross-venue context is diagnostic only: it helps distinguish
+a genuine detector disagreement from venue timing, basis, or a short-lived
+pullback and never changes whether an alert passes or fails.
 
 ## Security
 

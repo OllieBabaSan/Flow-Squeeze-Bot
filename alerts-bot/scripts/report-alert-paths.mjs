@@ -11,6 +11,7 @@ const data = resolve(argumentValue('--data-dir') || 'data');
 const sinceHours = Math.max(1, Number(argumentValue('--since-hours') || 24));
 const kind = argumentValue('--kind') || 'flow';
 const status = argumentValue('--status') || (kind === 'flow' ? 'sent' : '');
+const disposition = argumentValue('--disposition') || '';
 const since = Date.now() - sinceHours * 3600_000;
 let records;
 if (kind === 'breakout-shadow') {
@@ -45,13 +46,20 @@ if (kind === 'breakout-shadow') {
   const byId = new Map([...archived, ...Object.values(active.records || {})].map(record => [record.id, record]));
   records = [...byId.values()].filter(record => record.kind === kind
     && (!status || record.status === status)
+    && (!disposition || record.confirmationDisposition?.status === disposition)
     && Date.parse(record.entryAt || record.reservedAt) >= since);
 }
-const paths = records.map(record => analyzeAlertPath(record)).sort((a, b) => String(a.entryAt).localeCompare(String(b.entryAt)));
+const paths = records.map(record => ({
+  ...analyzeAlertPath(record),
+  status: record.status,
+  detectorVersion: record.detectorVersion || record.trigger?.detectorVersion || null,
+  parentSignalId: record.parentSignalId || null,
+  confirmationDisposition: record.confirmationDisposition || null,
+})).sort((a, b) => String(a.entryAt).localeCompare(String(b.entryAt)));
 console.log(JSON.stringify({
   generatedAt: new Date().toISOString(),
   since: new Date(since).toISOString(),
-  cohort: { kind, status: status || 'ANY' },
+  cohort: { kind, status: status || 'ANY', disposition: disposition || 'ANY' },
   methodology: {
     activation: 'At least +1.0% maximum favorable movement within 60 minutes.',
     worked: 'Activated and direction-adjusted return remained above zero at 60 minutes.',

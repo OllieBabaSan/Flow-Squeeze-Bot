@@ -103,7 +103,7 @@ function rankCandidate({ key, market, breakout, series, firstSeenAt, activity, q
   };
 }
 
-export function buildBreakoutFeed({ active = [], destinationCatalogs = {}, regime = {}, marketCount = 0, now = Date.now(), scanIntervalSeconds = 30, limitPerSide = 20 } = {}) {
+export function buildBreakoutFeed({ active = [], destinationCatalogs = {}, regime = {}, marketCount = 0, coverage = null, now = Date.now(), scanIntervalSeconds = 30, limitPerSide = 20 } = {}) {
   const candidates = active.map(candidate => rankCandidate(candidate, now, destinationCatalogs));
   const rank = (a, b) => (b.heat + b.quality * 0.45) - (a.heat + a.quality * 0.45);
   const bullishCandidates = candidates.filter(candidate => candidate.direction === 'BULLISH').sort(rank);
@@ -117,6 +117,7 @@ export function buildBreakoutFeed({ active = [], destinationCatalogs = {}, regim
     generatedAt: new Date(now).toISOString(),
     scanIntervalSeconds,
     marketCount,
+    coverage,
     activeCount: candidates.length,
     bullishActiveCount: bullishCandidates.length,
     bearishActiveCount: bearishCandidates.length,

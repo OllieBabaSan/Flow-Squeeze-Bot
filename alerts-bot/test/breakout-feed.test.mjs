@@ -11,12 +11,14 @@ test('ranks live breakout candidates by direction without exposing runtime state
     series: { bars: [{ close: 99 }, { close: 100 }] },
     firstSeenAt: now - 60_000,
   });
-  const feed = buildBreakoutFeed({ active: [candidate('BTC', 'BEARISH', 1, 0.4), candidate('ETH', 'BULLISH', 2, 0.8)], now, marketCount: 833 });
+  const coverage = { observerRawMarketCount: 900, sourceVenueCounts: { Bybit: 500 }, eligibleSourceVenueCounts: { Bybit: 400 } };
+  const feed = buildBreakoutFeed({ active: [candidate('BTC', 'BEARISH', 1, 0.4), candidate('ETH', 'BULLISH', 2, 0.8)], now, marketCount: 833, coverage });
   assert.equal(feed.bullish[0].symbol, 'ETH');
   assert.equal(feed.bearish[0].symbol, 'BTC');
   assert.equal(feed.bearish[0].ageSeconds, 60);
   assert.deepEqual(feed.bullish[0].path, [99, 100]);
   assert.equal('series' in feed.bullish[0], false);
+  assert.deepEqual(feed.coverage, coverage);
 });
 
 test('keeps active major markets available to the dashboard major filter', () => {
