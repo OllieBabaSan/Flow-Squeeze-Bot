@@ -61,9 +61,14 @@ const paths = records.map(record => ({
   ...analyzeAlertPath(record),
   status: record.status,
   detectorVersion: record.detectorVersion || record.trigger?.detectorVersion || null,
+  qualityStatus: record.qualityStatus || null,
+  qualityScore: record.qualityScore ?? null,
+  qualityFlags: record.qualityFlags || [],
   parentSignalId: record.parentSignalId || null,
   confirmationDisposition: record.confirmationDisposition || null,
 })).sort((a, b) => String(a.entryAt).localeCompare(String(b.entryAt)));
+const summarizeBy = accessor => Object.fromEntries([...new Set(paths.flatMap(path => accessor(path)))].sort()
+  .map(label => [label, summarizeAlertPaths(paths.filter(path => accessor(path).includes(label)))]));
 console.log(JSON.stringify({
   generatedAt: new Date().toISOString(),
   since: new Date(since).toISOString(),
@@ -76,5 +81,9 @@ console.log(JSON.stringify({
     inconclusive: 'Does not meet worked or failed criteria.',
   },
   summary: summarizeAlertPaths(paths),
+  breakoutQualityBreakdown: kind === 'breakout-shadow' ? {
+    byStatus: summarizeBy(path => path.qualityStatus ? [path.qualityStatus] : []),
+    byFlag: summarizeBy(path => path.qualityFlags || []),
+  } : null,
   paths,
 }, null, 2));

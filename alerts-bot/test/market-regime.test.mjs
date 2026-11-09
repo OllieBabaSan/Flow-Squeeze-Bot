@@ -9,13 +9,24 @@ const markets = (benchmark, negative = 0.7) => Array.from({ length: 100 }, (_, i
 }));
 
 test('classifies broad bearish and severe risk-off regimes', () => {
-  assert.equal(classifyMarketRegime(markets(-2, 0.65)).state, 'BEARISH');
+  const bearish = classifyMarketRegime(markets(-2, 0.65));
+  assert.equal(bearish.state, 'BEARISH');
+  assert.deepEqual(bearish.benchmarkChanges, { BTC: -2, ETH: -2 });
   assert.equal(classifyMarketRegime(markets(-5, 0.8)).state, 'SEVERE_RISK_OFF');
+});
+
+test('preserves exact BTC and ETH benchmark changes beside their combined median', () => {
+  const rows = markets(-2, 0.65);
+  rows[1].change24hPct = -3;
+  const regime = classifyMarketRegime(rows);
+  assert.deepEqual(regime.benchmarkChanges, { BTC: -2, ETH: -3 });
+  assert.equal(regime.benchmarkChangePct, -2.5);
 });
 
 test('fails open when regime inputs are incomplete', () => {
   const regime = classifyMarketRegime([{ symbol: 'BTC', venue: 'Hyperliquid', change24hPct: -10 }]);
   assert.equal(regime.reliable, false);
+  assert.deepEqual(regime.benchmarkChanges, { BTC: -10, ETH: null });
   assert.equal(evaluateRegimePublication({ eligible: true, direction: 'BULLISH' }, regime).publish, true);
 });
 

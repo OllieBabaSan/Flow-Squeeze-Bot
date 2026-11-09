@@ -81,6 +81,7 @@ passed, rejected, or later suppressed. Run `npm run confirmation-passed-paths`
 and `npm run confirmation-rejected-paths` for matched comparisons. Fast-move
 evaluation summaries, including every nonqualifying reason encountered before
 confirmation resolves, are written to `data/flow-fast-move-evaluations.jsonl`.
+Run `npm run fast-move-evaluations` for candidate counts and rejection reasons.
 Breakout observations record 1/3/5/10/15/30/60/120-minute checkpoints.
 Historical terminal dispositions are joined from the append-only ledger at
 report time, so older suppressed candidates remain comparable without rewriting

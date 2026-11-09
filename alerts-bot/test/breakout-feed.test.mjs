@@ -19,6 +19,7 @@ test('ranks live breakout candidates by direction without exposing runtime state
   assert.deepEqual(feed.bullish[0].path, [99, 100]);
   assert.equal('series' in feed.bullish[0], false);
   assert.deepEqual(feed.coverage, coverage);
+  assert.deepEqual(feed.regime.benchmarkChanges, { BTC: null, ETH: null });
 });
 
 test('keeps active major markets available to the dashboard major filter', () => {

@@ -27,11 +27,15 @@ export function classifyMarketRegime(markets = [], options = {}) {
     if (!canonical.has(market.symbol) || market.venue === 'Hyperliquid') canonical.set(market.symbol, { ...market, change24hPct: change });
   }
   const rows = [...canonical.values()];
-  const benchmarkChanges = ['BTC', 'ETH'].map(symbol => Number(canonical.get(symbol)?.change24hPct)).filter(Number.isFinite);
-  if (rows.length < rules.minimumBreadthMarkets || !benchmarkChanges.length) {
-    return { state: 'UNKNOWN', reliable: false, marketCount: rows.length, benchmarkChangePct: median(benchmarkChanges), negativeBreadthRatio: null };
+  const benchmarkChanges = Object.fromEntries(['BTC', 'ETH'].map(symbol => {
+    const change = Number(canonical.get(symbol)?.change24hPct);
+    return [symbol, Number.isFinite(change) ? change : null];
+  }));
+  const availableBenchmarkChanges = Object.values(benchmarkChanges).filter(Number.isFinite);
+  if (rows.length < rules.minimumBreadthMarkets || !availableBenchmarkChanges.length) {
+    return { state: 'UNKNOWN', reliable: false, marketCount: rows.length, benchmarkChangePct: median(availableBenchmarkChanges), benchmarkChanges, negativeBreadthRatio: null };
   }
-  const benchmarkChangePct = median(benchmarkChanges);
+  const benchmarkChangePct = median(availableBenchmarkChanges);
   const negativeBreadthRatio = rows.filter(row => row.change24hPct < 0).length / rows.length;
   const positiveBreadthRatio = rows.filter(row => row.change24hPct > 0).length / rows.length;
   let state = 'NEUTRAL';
@@ -39,7 +43,7 @@ export function classifyMarketRegime(markets = [], options = {}) {
     || (benchmarkChangePct <= rules.bearishBenchmarkPct && negativeBreadthRatio >= rules.severeBreadthRatio)) state = 'SEVERE_RISK_OFF';
   else if (benchmarkChangePct <= rules.bearishBenchmarkPct || negativeBreadthRatio >= rules.bearishBreadthRatio) state = 'BEARISH';
   else if (benchmarkChangePct >= -rules.bearishBenchmarkPct && positiveBreadthRatio >= rules.bearishBreadthRatio) state = 'BULLISH';
-  return { state, reliable: true, marketCount: rows.length, benchmarkChangePct, negativeBreadthRatio, positiveBreadthRatio };
+  return { state, reliable: true, marketCount: rows.length, benchmarkChangePct, benchmarkChanges, negativeBreadthRatio, positiveBreadthRatio };
 }
 
 export function evaluateRegimePublication(detection, regime, options = {}) {

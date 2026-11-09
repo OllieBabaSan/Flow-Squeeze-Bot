@@ -125,6 +125,10 @@ export function buildBreakoutFeed({ active = [], destinationCatalogs = {}, regim
       state: regime.state || 'UNKNOWN',
       reliable: Boolean(regime.reliable),
       benchmarkChangePct: finite(regime.benchmarkChangePct) ? Number(regime.benchmarkChangePct) : null,
+      benchmarkChanges: {
+        BTC: finite(regime.benchmarkChanges?.BTC) ? Number(regime.benchmarkChanges.BTC) : null,
+        ETH: finite(regime.benchmarkChanges?.ETH) ? Number(regime.benchmarkChanges.ETH) : null,
+      },
       negativeBreadthRatio: finite(regime.negativeBreadthRatio) ? Number(regime.negativeBreadthRatio) : null,
       positiveBreadthRatio: finite(regime.positiveBreadthRatio) ? Number(regime.positiveBreadthRatio) : null,
     },
