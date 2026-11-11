@@ -9,6 +9,7 @@ const value = (name, fallback) => {
 };
 const databasePath = resolve(value('--database', 'data/breakout-outcomes.sqlite3'));
 const sinceHours = Math.max(1, Number(value('--since-hours', 168)) || 168);
+const sourceVersion = value('--source-version', 'breakout-quality-shadow-v2');
 const database = new DatabaseSync(databasePath, { readOnly: true });
 const rows = database.prepare(`
   SELECT r.venue, r.direction, r.trigger_json, o.directed_return_pct AS return_60m
@@ -21,6 +22,7 @@ const cohorts = new Map();
 for (const row of rows) {
   let trigger;
   try { trigger = JSON.parse(row.trigger_json); } catch { continue; }
+  if (trigger.qualityGate?.version !== sourceVersion) continue;
   const regime = trigger.regime || {};
   const market = { change24hPct: trigger.qualityGate?.inputs?.broadDirected == null
     ? null : Number(trigger.qualityGate.inputs.broadDirected) * (row.direction === 'BEARISH' ? -1 : 1) };
@@ -48,5 +50,5 @@ const report = [...cohorts.values()].map(cohort => ({
   positivePct: Number((cohort.positive / cohort.count * 100).toFixed(2)),
   averageReturn60mPct: Number((cohort.totalReturn60m / cohort.count).toFixed(4)),
 })).sort((left, right) => left.dimension.localeCompare(right.dimension) || left.bucket.localeCompare(right.bucket));
-console.log(JSON.stringify({ version: BREAKOUT_QUALITY_VERSION, databasePath, sinceHours, maturedRecords: rows.length, cohorts: report }, null, 2));
+console.log(JSON.stringify({ version: BREAKOUT_QUALITY_VERSION, sourceVersion, databasePath, sinceHours, maturedRecords: report.find(item => item.dimension === 'overall') ? report.filter(item => item.dimension === 'overall').reduce((sum, item) => sum + item.count, 0) : 0, cohorts: report }, null, 2));
 database.close();

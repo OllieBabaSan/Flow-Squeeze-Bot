@@ -21,7 +21,7 @@ test('treats severe risk-off as aligned for bearish breakouts', () => {
     market: { change24hPct: -2 },
     regime: { state: 'SEVERE_RISK_OFF' },
   });
-  assert.equal(result.status, 'QUALIFIED_SHADOW');
+  assert.notEqual(result.status, 'QUALIFIED_SHADOW');
   assert.ok(result.flags.includes('REGIME_ALIGNED'));
 });
 

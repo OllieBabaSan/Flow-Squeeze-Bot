@@ -44,7 +44,8 @@ export function evaluateBreakoutQuality({ observation = {}, market = {}, regime 
   const regimeAligned = ['BEARISH', 'SEVERE_RISK_OFF'].includes(regime.state) ? direction === 'BEARISH'
     : regime.state === 'BULLISH' ? direction === 'BULLISH' : null;
   score += points(components, 'marketRegime', regime.state === 'NEUTRAL' ? 2
-    : regimeAligned === true ? 14 : regimeAligned === false ? -18 : 0);
+    : regime.state === 'SEVERE_RISK_OFF' && regimeAligned === true ? 4
+      : regimeAligned === true ? 14 : regimeAligned === false ? -18 : 0);
   if (regimeAligned === false) flags.push('REGIME_COUNTERTREND');
   else if (regimeAligned === true) flags.push('REGIME_ALIGNED');
   else if (regime.state === 'NEUTRAL') flags.push('REGIME_NEUTRAL');
@@ -66,7 +67,7 @@ export function evaluateBreakoutQuality({ observation = {}, market = {}, regime 
   // Qualification now requires the signal, broad trend, and market regime to
   // agree, while neutral/countertrend signals remain available for research.
   const structurallyQualified = momentumAligned && broadDirected != null && broadDirected >= 0.25
-    && regimeAligned === true && clearance != null && clearance < 1;
+    && regimeAligned === true && regime.state !== 'SEVERE_RISK_OFF' && clearance != null && clearance < 1;
   const status = activity == null ? 'ACTIVITY_MISSING_SHADOW'
     : structurallyQualified && score >= 65 ? 'QUALIFIED_SHADOW' : score >= 45 ? 'WATCH_SHADOW' : 'LOW_QUALITY_SHADOW';
   return {
