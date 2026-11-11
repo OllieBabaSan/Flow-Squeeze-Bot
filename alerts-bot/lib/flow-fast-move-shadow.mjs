@@ -51,11 +51,13 @@ export function evaluateFastMoveShadow(candidate, market, regime = {}, now = Dat
     ageSeconds, movePct, peakDirectedMovePct, retracementFromPeakPct, spreadBps,
     freshTurnoverUsd, detectionOiGrowthPct, liveOiChangePct,
     regime: regime.state || 'UNKNOWN', regimeAligned,
+    venueDivergence: market?.venueDivergence || null,
   };
   if (ageSeconds < rules.minimumAgeSeconds) return { action: 'WAIT', reason: 'FAST_MOVE_TOO_EARLY', metrics };
   if (ageSeconds > rules.maximumAgeSeconds) return { action: 'CLOSED', reason: 'FAST_MOVE_WINDOW_CLOSED', metrics };
   if (spreadBps == null) return { action: 'WAIT', reason: 'FAST_MOVE_SPREAD_UNAVAILABLE', metrics };
   if (spreadBps > rules.maximumSpreadBps) return { action: 'WAIT', reason: 'FAST_MOVE_SPREAD_TOO_WIDE', metrics };
+  if (market?.venueDivergence?.researchExcluded) return { action: 'WAIT', reason: 'FAST_MOVE_VENUE_PRICE_DIVERGENCE', metrics };
   if (!regimeAligned) return { action: 'WAIT', reason: 'FAST_MOVE_REGIME_OPPOSED', metrics };
   if (freshTurnoverUsd == null || freshTurnoverUsd < rules.minimumFreshTurnoverUsd) return { action: 'WAIT', reason: 'FAST_MOVE_TURNOVER_WEAK', metrics };
   if (detectionOiGrowthPct == null || detectionOiGrowthPct < rules.minimumDetectionOiGrowthPct) return { action: 'WAIT', reason: 'FAST_MOVE_DETECTION_OI_WEAK', metrics };

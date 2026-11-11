@@ -28,6 +28,10 @@ export function summarizeVenueDivergence(rows, symbol, selectedVenue) {
   const selected = observations.find(row => row.venue === selectedVenue) || null;
   const minimumPrice = Math.min(...prices);
   const maximumPrice = Math.max(...prices);
+  const selectedVsMedianPct = selected ? ((selected.price / medianPrice) - 1) * 100 : null;
+  const crossVenueRangePct = medianPrice ? ((maximumPrice - minimumPrice) / medianPrice) * 100 : null;
+  const comparable = observations.length >= 3 && selectedVsMedianPct != null;
+  const divergent = comparable && (Math.abs(selectedVsMedianPct) >= 1.5 || crossVenueRangePct >= 3);
   return {
     available: observations.length >= 2,
     symbol,
@@ -35,8 +39,10 @@ export function summarizeVenueDivergence(rows, symbol, selectedVenue) {
     venueCount: observations.length,
     medianPrice,
     selectedPrice: selected?.price ?? null,
-    selectedVsMedianPct: selected ? ((selected.price / medianPrice) - 1) * 100 : null,
-    crossVenueRangePct: medianPrice ? ((maximumPrice - minimumPrice) / medianPrice) * 100 : null,
+    selectedVsMedianPct,
+    crossVenueRangePct,
+    classification: !comparable ? 'INSUFFICIENT_COMPARABLE_VENUES' : divergent ? 'DIVERGENT_SHADOW' : 'CONSISTENT_SHADOW',
+    researchExcluded: divergent,
     observations,
   };
 }

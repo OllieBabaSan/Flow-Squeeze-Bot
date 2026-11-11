@@ -20,6 +20,13 @@ test('rejects countertrend, weak participation, and fading moves from the cohort
   assert.equal(evaluateFastMoveShadow({ ...candidate, peakDirectedMovePct: 1 }, market, { state: 'BULLISH' }, 30_000).reason, 'FAST_MOVE_MOMENTUM_FADING');
 });
 
+test('does not qualify a research fast move with material cross-venue divergence', () => {
+  const divergentMarket = { ...market, venueDivergence: { classification: 'DIVERGENT_SHADOW', researchExcluded: true } };
+  const result = evaluateFastMoveShadow(candidate, divergentMarket, { state: 'BULLISH' }, 30_000);
+  assert.equal(result.action, 'WAIT');
+  assert.equal(result.reason, 'FAST_MOVE_VENUE_PRICE_DIVERGENCE');
+});
+
 test('accumulates auditable evaluation and rejection reasons without losing the last metrics', () => {
   const early = evaluateFastMoveShadow(candidate, market, { state: 'BULLISH' }, 10_000);
   const countertrend = evaluateFastMoveShadow(candidate, market, { state: 'BEARISH' }, 30_000);

@@ -20,3 +20,14 @@ test('reports unavailable when only one venue has a usable price', () => {
   assert.equal(result.available, false);
   assert.equal(result.venueCount, 1);
 });
+
+test('flags a selected venue materially above a three-venue median for research exclusion', () => {
+  const result = summarizeVenueDivergence([
+    { venue: 'Bybit', symbol: 'INIT', price: 1.038 },
+    { venue: 'Hyperliquid', symbol: 'INIT', price: 1.001 },
+    { venue: 'Binance', symbol: 'INIT', price: 1 },
+    { venue: 'OKX', symbol: 'INIT', price: 0.999 },
+  ], 'INIT', 'Bybit');
+  assert.equal(result.classification, 'DIVERGENT_SHADOW');
+  assert.equal(result.researchExcluded, true);
+});

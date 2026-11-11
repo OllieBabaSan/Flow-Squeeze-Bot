@@ -9,10 +9,26 @@ const observation = overrides => ({
 });
 
 test('qualifies an aligned, active breakout in shadow only', () => {
-  const result = evaluateBreakoutQuality({ observation: observation(), market: { change24hPct: 2 }, regime: { state: 'NEUTRAL' } });
+  const result = evaluateBreakoutQuality({ observation: observation(), market: { change24hPct: 2 }, regime: { state: 'BULLISH' } });
   assert.equal(result.status, 'QUALIFIED_SHADOW');
   assert.equal(result.shadowOnly, true);
   assert.ok(result.score >= 70);
+});
+
+test('treats severe risk-off as aligned for bearish breakouts', () => {
+  const result = evaluateBreakoutQuality({
+    observation: observation({ direction: 'BEARISH' }),
+    market: { change24hPct: -2 },
+    regime: { state: 'SEVERE_RISK_OFF' },
+  });
+  assert.equal(result.status, 'QUALIFIED_SHADOW');
+  assert.ok(result.flags.includes('REGIME_ALIGNED'));
+});
+
+test('keeps neutral-regime breakouts in research watch even with a high component score', () => {
+  const result = evaluateBreakoutQuality({ observation: observation(), market: { change24hPct: 2 }, regime: { state: 'NEUTRAL' } });
+  assert.notEqual(result.status, 'QUALIFIED_SHADOW');
+  assert.ok(result.flags.includes('REGIME_NEUTRAL'));
 });
 
 test('penalizes countertrend, low-activity, extended observations', () => {

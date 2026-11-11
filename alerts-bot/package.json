@@ -14,6 +14,7 @@
     "breakout-paths": "node scripts/report-alert-paths.mjs --kind breakout-shadow --status breakout-shadow",
     "fast-move-paths": "node scripts/report-alert-paths.mjs --kind fast-move-shadow --status fast-move-shadow",
     "fast-move-evaluations": "node scripts/report-fast-move-evaluations.mjs --since-hours 168",
+    "replay:breakout-quality": "node scripts/replay-breakout-quality.mjs --since-hours 168",
     "confirmation-passed-paths": "node scripts/report-alert-paths.mjs --kind flow --status confirmation-passed",
     "confirmation-rejected-paths": "node scripts/report-alert-paths.mjs --kind flow --status confirmation-rejected",
     "migrate:breakout-outcomes": "node scripts/migrate-breakout-outcomes.mjs",
