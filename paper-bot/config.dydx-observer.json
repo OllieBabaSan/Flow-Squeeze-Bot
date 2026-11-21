@@ -1,0 +1,9 @@
+{
+  "signalFile": "../crypto-news-radar/data/flow-alert-history.jsonl",
+  "allowedSourceVenues": ["Bybit", "Binance"],
+  "pollMilliseconds": 1000,
+  "catalogRefreshSeconds": 60,
+  "observationHorizonsSeconds": [0, 1, 5, 15, 30, 60, 120, 300, 600, 1200],
+  "quoteNotionalUsd": 800,
+  "retentionDays": 30
+}

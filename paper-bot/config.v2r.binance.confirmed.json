@@ -1,0 +1,7 @@
+{
+  "extends": "config.v2.binance.confirmed.json",
+  "validationPhase": "V2R_BINANCE_CONFIRMED",
+  "signalFile": "../release/Flow-Squeeze-Bot/alerts-bot/data/flow-alert-history.jsonl",
+  "sharedMarketCacheFile": "data-v2r-shared-market/cache.json",
+  "sharedMarketCacheMaximumAgeMs": 15000
+}

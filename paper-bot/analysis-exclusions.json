@@ -1,0 +1,8 @@
+{
+  "signalIds": [
+    "2026-10-11T15:33:50.707Z:Bybit:NEAR:BULLISH"
+  ],
+  "notes": {
+    "2026-10-11T15:33:50.707Z:Bybit:NEAR:BULLISH": "Explicit user-directed analytical outlier exclusion. Preserve raw events for audit; omit this trade from default performance and shadow comparisons."
+  }
+}

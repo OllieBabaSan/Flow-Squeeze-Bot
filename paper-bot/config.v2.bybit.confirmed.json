@@ -1,0 +1,16 @@
+{
+  "extends": "config.json",
+  "validationPhase": "V2_BYBIT_CONFIRMED",
+  "initialEquityUsd": 1000,
+  "allowedSourceVenues": ["Bybit"],
+  "signalFile": "../crypto-news-radar/data/flow-alert-history.jsonl",
+  "pollSeconds": 1,
+  "minimumConfirmationAgeSeconds": 60,
+  "minimumConfirmationMovePct": 0.25,
+  "confirmationWindowSeconds": 180,
+  "trailingGivebackPct": 0.5,
+  "activeEarlyFailureRules": [
+    { "minimumHeldMinutes": 5, "maximumProgressPct": -0.75, "maximumPeakProgressPct": 0.25, "exitReason": "EARLY_FAILURE_5M" },
+    { "minimumHeldMinutes": 10, "maximumProgressPct": -0.5, "maximumPeakProgressPct": 0.5, "exitReason": "EARLY_FAILURE_10M" }
+  ]
+}

@@ -10,7 +10,13 @@ export async function writeJson(path, value) {
   const temp = `${path}.tmp`;
   await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`);
   const { rename } = await import('node:fs/promises');
-  await rename(temp, path);
+  for (let attempt = 0; ; attempt += 1) {
+    try { await rename(temp, path); break; }
+    catch (error) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error?.code) || attempt >= 5) throw error;
+      await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
 }
 
 export async function appendJsonl(path, value) {
@@ -28,5 +34,7 @@ export async function readNewLines(path, offset) {
     await handle.read(buffer, 0, buffer.length, offset);
     await handle.close();
     return { lines: buffer.toString('utf8').split(/\r?\n/).filter(Boolean), offset: size };
-  } catch { return { lines: [], offset }; }
+  } catch (error) {
+    throw new Error(`Unable to read signal stream ${path}: ${error.message}`, { cause: error });
+  }
 }

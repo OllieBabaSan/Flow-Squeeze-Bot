@@ -1,5 +1,5 @@
 {
-  "name": "flow-squeeze-hyperliquid-paper",
+  "name": "flow-squeeze-automation",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,6 +9,31 @@
     "once": "node scripts/run-paper.mjs --once",
     "test": "node --test",
     "report": "node scripts/report.mjs"
+    ,"report:binance": "node scripts/report.mjs --config config.binance.json --data-dir data-binance"
+    ,"observe:dydx": "node scripts/run-dydx-observer.mjs"
+    ,"observe:dydx:once": "node scripts/run-dydx-observer.mjs --once"
+    ,"report:dydx": "node scripts/report-dydx-observer.mjs"
+    ,"benchmark:stream": "node scripts/run-streaming-benchmark.mjs"
+    ,"report:stream": "node scripts/report-streaming-benchmark.mjs"
+    ,"replay:exits": "node scripts/replay-exit-design.mjs"
     ,"historical-screen": "node scripts/historical-screen.mjs"
+    ,"start:v2:bybit:confirmed": "node scripts/run-paper.mjs --config config.v2.bybit.confirmed.json --data-dir data-v2-bybit-confirmed"
+    ,"start:v2:bybit:immediate": "node scripts/run-paper.mjs --config config.v2.bybit.immediate.json --data-dir data-v2-bybit-immediate"
+    ,"start:v2:binance:confirmed": "node scripts/run-paper.mjs --config config.v2.binance.confirmed.json --data-dir data-v2-binance-confirmed"
+    ,"start:v2:binance:immediate": "node scripts/run-paper.mjs --config config.v2.binance.immediate.json --data-dir data-v2-binance-immediate"
+    ,"report:v2:bybit:confirmed": "node scripts/report.mjs --config config.v2.bybit.confirmed.json --data-dir data-v2-bybit-confirmed"
+    ,"report:v2:bybit:immediate": "node scripts/report.mjs --config config.v2.bybit.immediate.json --data-dir data-v2-bybit-immediate"
+    ,"report:v2:binance:confirmed": "node scripts/report.mjs --config config.v2.binance.confirmed.json --data-dir data-v2-binance-confirmed"
+    ,"report:v2:binance:immediate": "node scripts/report.mjs --config config.v2.binance.immediate.json --data-dir data-v2-binance-immediate"
+    ,"cache:hyperliquid": "node scripts/run-shared-hyperliquid-cache.mjs"
+    ,"start:v2r:bybit:confirmed": "node scripts/run-paper.mjs --config config.v2r.bybit.confirmed.json --data-dir data-v2r-bybit-confirmed"
+    ,"start:v2r:bybit:immediate": "node scripts/run-paper.mjs --config config.v2r.bybit.immediate.json --data-dir data-v2r-bybit-immediate"
+    ,"start:v2r:binance:confirmed": "node scripts/run-paper.mjs --config config.v2r.binance.confirmed.json --data-dir data-v2r-binance-confirmed"
+    ,"start:v2r:binance:immediate": "node scripts/run-paper.mjs --config config.v2r.binance.immediate.json --data-dir data-v2r-binance-immediate"
+    ,"report:v2r:bybit:confirmed": "node scripts/report.mjs --config config.v2r.bybit.confirmed.json --data-dir data-v2r-bybit-confirmed"
+    ,"report:v2r:bybit:immediate": "node scripts/report.mjs --config config.v2r.bybit.immediate.json --data-dir data-v2r-bybit-immediate"
+    ,"report:v2r:binance:confirmed": "node scripts/report.mjs --config config.v2r.binance.confirmed.json --data-dir data-v2r-binance-confirmed"
+    ,"report:v2r:binance:immediate": "node scripts/report.mjs --config config.v2r.binance.immediate.json --data-dir data-v2r-binance-immediate"
+    ,"report:breakout": "bash scripts/report-breakout-paths.sh"
   }
 }
