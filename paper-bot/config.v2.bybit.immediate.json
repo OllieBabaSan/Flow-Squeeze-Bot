@@ -1,0 +1,7 @@
+{
+  "extends": "config.v2.bybit.confirmed.json",
+  "validationPhase": "V2_BYBIT_IMMEDIATE",
+  "minimumConfirmationAgeSeconds": 0,
+  "minimumConfirmationMovePct": 0,
+  "confirmationWindowSeconds": 300
+}

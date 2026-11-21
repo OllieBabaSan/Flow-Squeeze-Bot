@@ -7,13 +7,23 @@ import { evaluateShadowExitRules } from '../src/shadow-exits.mjs';
 import { evaluateStrengthShadowRules, partialExitAccounting } from '../src/strength-shadows.mjs';
 import { appendJsonl, readJson, readNewLines, writeJson } from '../src/storage.mjs';
 import { normalizeFlowSignal } from '../src/signal-contract.mjs';
+import { normalizeCacheErrorFingerprint, readMarketSnapshot } from '../src/shared-market-cache.mjs';
+import { createShadowPosition, evaluateShadowPosition, executableEntryFill } from '../src/missed-opportunity-shadows.mjs';
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const argumentValue = name => {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : null;
 };
-const config = JSON.parse(await readFile(resolve(projectDir, argumentValue('--config') || 'config.json'), 'utf8'));
+const configPath = resolve(projectDir, argumentValue('--config') || 'config.json');
+async function loadConfig(path, seen = new Set()) {
+  if (seen.has(path)) throw new Error(`Circular config inheritance: ${path}`);
+  seen.add(path);
+  const configured = JSON.parse(await readFile(path, 'utf8'));
+  const inherited = configured.extends ? await loadConfig(resolve(dirname(path), configured.extends), seen) : {};
+  return { ...inherited, ...configured };
+}
+const config = await loadConfig(configPath);
 // The automation intentionally consumes Flow/Squeeze Alerts, but it must not
 // depend on a particular sibling-directory layout. Operators can point it at
 // any installed parent signal stream with FLOW_SIGNAL_FILE or --signal-file.
@@ -29,6 +39,7 @@ const state = await readJson(statePath, {
   startedAt: new Date().toISOString(), equityUsd: config.initialEquityUsd, peakEquityUsd: config.initialEquityUsd,
   signalOffset: null, candidates: {}, positions: {}, seenSignals: {}, day: null, dayStartEquityUsd: config.initialEquityUsd,
   rejectedObservations: {},
+  missedOpportunityShadowPositions: {},
   postExitObservations: {},
   totals: { signals: 0, entries: 0, exits: 0, rejected: 0, wins: 0, losses: 0, feesUsd: 0 },
 });
@@ -61,10 +72,21 @@ async function record(type, details = {}) {
   console.log(JSON.stringify(event));
 }
 
+await record('SIGNAL_SOURCE_SELECTED', { signalPath, source: argumentValue('--signal-file') ? 'argument' : process.env.FLOW_SIGNAL_FILE ? 'environment' : 'config' });
+if (config.missedOpportunityShadowRules) {
+  await record('MISSED_OPPORTUNITY_SHADOWS_ENABLED', { rules: config.missedOpportunityShadowRules });
+}
+
 async function ingestSignals(now) {
+  if (state.signalPath !== signalPath) {
+    const previousSignalPath = state.signalPath || null;
+    state.signalPath = signalPath;
+    state.signalOffset = (await stat(signalPath)).size;
+    await record('SIGNAL_SOURCE_REBASED', { previousSignalPath, signalPath, offset: state.signalOffset, reason: 'SOURCE_PATH_CHANGED_NO_HISTORICAL_REPLAY' });
+    return;
+  }
   if (state.signalOffset == null) {
-    try { state.signalOffset = (await stat(signalPath)).size; }
-    catch { state.signalOffset = 0; }
+    state.signalOffset = (await stat(signalPath)).size;
     await record('SIGNAL_BASELINE', { signalPath, offset: state.signalOffset });
     return;
   }
@@ -122,6 +144,10 @@ async function reject(candidate, reason, metrics = {}, market = null, now = Date
   if (market?.mid > 0) state.rejectedObservations[candidate.id] = {
     id: candidate.id, symbol: candidate.symbol, direction: candidate.direction, kind: candidate.kind, reason,
     rejectedAtMs: now, rejectedPrice: market.mid, horizons: {}, maxFavorablePct: 0, maxAdversePct: 0,
+    alertedAtMs: candidate.alertedAtMs, alertPrice: candidate.alertPrice, alertOpenInterest: candidate.alertOpenInterest,
+    referencePrice: candidate.referencePrice, referenceOpenInterest: candidate.referenceOpenInterest,
+    sourceVenue: candidate.sourceVenue, shadowAttempts: {},
+    missedOpportunityShadowEligible: true,
   };
   await record('TRADE_REJECTED', { signalId: candidate.id, symbol: candidate.symbol, direction: candidate.direction, kind: candidate.kind, reason, metrics });
 }
@@ -203,20 +229,30 @@ async function cycle() {
   const now = Date.now();
   rollDay(now);
   await ingestSignals(now);
-  const catalog = await fetchMarkets();
+  const catalog = config.sharedMarketCacheFile
+    ? await readMarketSnapshot(
+      resolve(projectDir, config.sharedMarketCacheFile), now,
+      Number(config.sharedMarketCacheMaximumAgeMs || 15_000),
+      Number(config.sharedMarketBookMaximumAgeMs || 5_000),
+      Number(config.sharedMarketCatalogMaximumAgeMs || 45_000),
+    )
+    : await fetchMarkets();
   state.rejectedObservations ||= {};
   state.postExitObservations ||= {};
-  // Reject venue mismatches before requesting order books. This preserves the
-  // normal rejection event while avoiding work for symbols we cannot trade.
+  state.missedOpportunityShadowPositions ||= {};
+  // Resolve certain venue mismatches before building the book request set.
+  // Keep the existing rejection event and totals for comparable paper reports.
   for (const candidate of Object.values({ ...state.candidates })) {
     if (!catalog.has(candidate.symbol)) await reject(candidate, 'NOT_LISTED_ON_HYPERLIQUID', {}, null, now);
   }
-  const requiredSymbols = new Set([...Object.values(state.candidates), ...Object.values(state.positions), ...Object.values(state.rejectedObservations), ...Object.values(state.postExitObservations)].map(item => item.symbol));
+  const requiredSymbols = new Set([...Object.values(state.candidates), ...Object.values(state.positions), ...Object.values(state.rejectedObservations), ...Object.values(state.postExitObservations), ...Object.values(state.missedOpportunityShadowPositions)].map(item => item.symbol));
   const books = new Map();
   await Promise.all([...requiredSymbols].map(async symbol => {
     const market = catalog.get(symbol);
     if (!market) return;
-    try { books.set(symbol, await attachBook(market)); }
+    try {
+      books.set(symbol, config.sharedMarketCacheFile ? market : await attachBook(market));
+    }
     catch (error) { await record('MARKET_DATA_WARNING', { symbol, error: error instanceof Error ? error.message : String(error) }); }
   }));
   for (const candidate of Object.values({ ...state.candidates })) {
@@ -231,6 +267,98 @@ async function cycle() {
     candidate.lastDecision = decision;
     if (decision.action === 'REJECT') await reject(candidate, decision.reason, decision.metrics, market, now);
     else if (decision.action === 'ENTER') await enter(candidate, market, decision, now);
+  }
+  const missedRules = config.missedOpportunityShadowRules || {};
+  const startMissedShadow = async (observation, model, notionalUsd, market, decision, metadata = {}) => {
+    const fill = executableEntryFill(market, observation.direction, notionalUsd, config.slippageBpsPerSide);
+    if (!fill || fill.fillRatio < 0.999999 || !(fill.entryPrice > 0)) {
+      await record('MISSED_OPPORTUNITY_SHADOW_SKIPPED', {
+        signalId: observation.id, symbol: observation.symbol, direction: observation.direction, kind: observation.kind,
+        rejectionReason: observation.reason, model, notionalUsd, reason: 'INSUFFICIENT_EXECUTABLE_DEPTH',
+        fillRatio: fill?.fillRatio ?? 0, quoteFilledUsd: fill?.quoteFilledUsd ?? 0, ...metadata,
+      });
+      return;
+    }
+    const position = createShadowPosition({ observation, model, notionalUsd, entryPrice: fill.entryPrice, enteredAtMs: now, config, metadata });
+    state.missedOpportunityShadowPositions[position.id] = position;
+    await record('MISSED_OPPORTUNITY_SHADOW_ENTRY', {
+      signalId: observation.id, shadowPositionId: position.id, symbol: observation.symbol,
+      direction: observation.direction, kind: observation.kind, rejectionReason: observation.reason,
+      model, notionalUsd, entryPrice: fill.entryPrice, fillRatio: fill.fillRatio,
+      spreadBps: ((market.ask - market.bid) / market.mid) * 10000,
+      decisionReason: decision.reason, confirmation: decision.metrics, ...metadata,
+    });
+  };
+  for (const observation of Object.values(state.rejectedObservations)) {
+    // Old rejections predate this prospective experiment and must never be replayed into it.
+    if (!observation.missedOpportunityShadowEligible) continue;
+    const market = books.get(observation.symbol) || catalog.get(observation.symbol);
+    if (!market?.bid || !market?.ask) continue;
+    observation.shadowAttempts ||= {};
+    const candidate = { ...observation, id: observation.id, stage: 'OBSERVING' };
+    if (observation.reason === 'SPREAD_TOO_WIDE') {
+      const elapsedSeconds = (now - observation.rejectedAtMs) / 1000;
+      for (const checkpointSeconds of missedRules.spreadRecoverySeconds || []) {
+        const model = `SPREAD_RECOVERY_${checkpointSeconds}S`;
+        if (elapsedSeconds < checkpointSeconds || observation.shadowAttempts[model]) continue;
+        const decision = evaluateCandidate(candidate, market, now, config);
+        observation.shadowAttempts[model] = { at: new Date(now).toISOString(), action: decision.action, reason: decision.reason };
+        if (decision.action === 'ENTER') {
+          const sizing = sizePosition(state.equityUsd, simulatedFill(market, observation.direction, 'ENTRY', config), observation.direction, config);
+          await startMissedShadow(observation, model, sizing.notional, market, decision, { checkpointSeconds });
+        } else {
+          await record('MISSED_OPPORTUNITY_SHADOW_SKIPPED', {
+            signalId: observation.id, symbol: observation.symbol, direction: observation.direction, kind: observation.kind,
+            rejectionReason: observation.reason, model, reason: decision.reason, checkpointSeconds, metrics: decision.metrics,
+          });
+        }
+      }
+    }
+    if (observation.reason === 'INSUFFICIENT_HYPERLIQUID_LIQUIDITY' && !observation.shadowAttempts.ADAPTIVE_LIQUIDITY) {
+      const decision = evaluateCandidate(candidate, market, now, { ...config, minimumHyperliquidVolume24hUsd: 0 });
+      if (decision.action === 'ENTER' || decision.action === 'REJECT') {
+        observation.shadowAttempts.ADAPTIVE_LIQUIDITY = { at: new Date(now).toISOString(), action: decision.action, reason: decision.reason };
+        if (decision.action === 'ENTER') {
+          for (const notionalUsd of missedRules.adaptiveLiquidityNotionalUsd || []) {
+            await startMissedShadow(observation, `ADAPTIVE_LIQUIDITY_${notionalUsd}USD`, Number(notionalUsd), market, decision, { originalVolume24hUsd: market.volume24hUsd });
+          }
+        } else {
+          await record('MISSED_OPPORTUNITY_SHADOW_SKIPPED', {
+            signalId: observation.id, symbol: observation.symbol, direction: observation.direction, kind: observation.kind,
+            rejectionReason: observation.reason, model: 'ADAPTIVE_LIQUIDITY', reason: decision.reason, metrics: decision.metrics,
+          });
+        }
+      }
+    }
+  }
+  for (const position of Object.values({ ...state.missedOpportunityShadowPositions })) {
+    const market = books.get(position.symbol);
+    if (!market?.bid || !market?.ask) continue;
+    const outcome = evaluateShadowPosition(position, market, now, config);
+    if (!outcome) continue;
+    if (outcome.pendingExit) {
+      if (!position.lastDepthExitWarningAtMs || now - position.lastDepthExitWarningAtMs >= 60_000) {
+        position.lastDepthExitWarningAtMs = now;
+        await record('MISSED_OPPORTUNITY_SHADOW_EXIT_DEFERRED', {
+          signalId: position.parentSignalId, shadowPositionId: position.id, symbol: position.symbol,
+          direction: position.direction, model: position.model, intendedExitReason: outcome.decision.reason,
+          fillRatio: outcome.fill?.fillRatio ?? 0, quoteFilledUsd: outcome.fill?.quoteFilledUsd ?? 0,
+        });
+      }
+      continue;
+    }
+    delete state.missedOpportunityShadowPositions[position.id];
+    await record('MISSED_OPPORTUNITY_SHADOW_EXIT', {
+      signalId: position.parentSignalId, shadowPositionId: position.id, symbol: position.symbol,
+      direction: position.direction, kind: position.kind, rejectionReason: position.rejectionReason,
+      model: position.model, notionalUsd: position.notional, entryPrice: position.entryPrice,
+      exitPrice: outcome.decision.exitPrice, exitReason: outcome.decision.reason,
+      heldMinutes: (now - position.enteredAtMs) / 60000,
+      progressPct: outcome.decision.progressPct, peakProgressPct: outcome.decision.peakProgressPct,
+      maxAdverseProgressPct: outcome.decision.maxAdverseProgressPct,
+      exitFillRatio: outcome.fill.fillRatio, exitQuoteFilledUsd: outcome.fill.quoteFilledUsd,
+      ...outcome.accounting,
+    });
   }
   for (const position of Object.values({ ...state.positions })) {
     const market = books.get(position.symbol);
@@ -326,7 +454,39 @@ async function cycle() {
 try {
   do {
     const started = Date.now();
-    try { await cycle(); } catch (error) { await record('CYCLE_ERROR', { error: error instanceof Error ? error.stack || error.message : String(error) }); }
+    try {
+      await cycle();
+      if (state.lastCycleError) {
+        const recoveredAtMs = Date.now();
+        const incidentStartedAtMs = Number(state.lastCycleError.startedAtMs || state.lastCycleError.recordedAtMs || recoveredAtMs);
+        await record('CYCLE_RECOVERED', {
+          fingerprint: state.lastCycleError.fingerprint || String(state.lastCycleError.message || 'LEGACY_CYCLE_ERROR').split('\n')[0],
+          incidentStartedAt: new Date(incidentStartedAtMs).toISOString(),
+          durationMs: recoveredAtMs - incidentStartedAtMs,
+          failedCycles: Number(state.lastCycleError.count || 1),
+        });
+        state.lastCycleError = null;
+        await writeJson(statePath, state);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.stack || error.message : String(error);
+      const now = Date.now();
+      const fingerprint = normalizeCacheErrorFingerprint(error instanceof Error ? error.message : error);
+      const sameIncident = state.lastCycleError?.active && state.lastCycleError.fingerprint === fingerprint;
+      const incident = sameIncident ? state.lastCycleError : {
+        active: true, fingerprint, message, startedAtMs: now, recordedAtMs: 0, count: 0,
+      };
+      incident.count += 1;
+      if (!sameIncident || now - Number(incident.recordedAtMs || 0) >= 15 * 60_000) {
+        await record(sameIncident ? 'CYCLE_ERROR_SUMMARY' : 'CYCLE_ERROR', {
+          error: message, fingerprint, incidentStartedAt: new Date(incident.startedAtMs).toISOString(),
+          failedCycles: incident.count,
+        });
+        incident.recordedAtMs = now;
+      }
+      state.lastCycleError = incident;
+      await writeJson(statePath, state);
+    }
     if (once) break;
     await new Promise(resolvePromise => setTimeout(resolvePromise, Math.max(0, config.pollSeconds * 1000 - (Date.now() - started))));
   } while (true);

@@ -19,8 +19,12 @@ export function evaluateCandidate(candidate, market, now, config) {
   const squeeze = candidate.kind === 'SQUEEZE_PRESSURE';
   const oiChangePct = referenceOpenInterest > 0 ? (market.openInterest / referenceOpenInterest - 1) * 100 : null;
   const requiredMove = squeeze ? config.minimumSqueezeConfirmationMovePct : config.minimumConfirmationMovePct;
+  const minimumConfirmationAgeSeconds = squeeze ? 0 : Number(config.minimumConfirmationAgeSeconds || 0);
   const squeezeConfirmed = !squeeze || (oiChangePct != null && oiChangePct < 0);
-  if (movePct >= requiredMove && squeezeConfirmed) return { action: 'ENTER', reason: squeeze ? 'SQUEEZE_CONFIRMED' : 'FLOW_CONFIRMED', metrics: { movePct, oiChangePct, spreadBps } };
+  if (movePct >= requiredMove && squeezeConfirmed && ageSeconds < minimumConfirmationAgeSeconds) {
+    return { action: 'WAIT', reason: 'AWAITING_MINIMUM_CONFIRMATION_AGE', metrics: { movePct, oiChangePct, spreadBps, ageSeconds, minimumConfirmationAgeSeconds } };
+  }
+  if (movePct >= requiredMove && squeezeConfirmed) return { action: 'ENTER', reason: squeeze ? 'SQUEEZE_CONFIRMED' : 'FLOW_CONFIRMED', metrics: { movePct, oiChangePct, spreadBps, ageSeconds } };
   return { action: 'WAIT', reason: squeeze && movePct >= requiredMove ? 'AWAITING_COVERING_EVIDENCE' : 'AWAITING_DIRECTIONAL_CONFIRMATION', metrics: { movePct, oiChangePct, spreadBps } };
 }
 
@@ -56,6 +60,11 @@ export function evaluateExit(position, market, now, config) {
   if (progressPct <= -config.stopLossPct) return { ...result, exit: true, reason: 'HARD_STOP' };
   if (progressPct >= config.takeProfitPct) return { ...result, exit: true, reason: 'TARGET_REACHED' };
   if (peakProgressPct >= config.trailingActivationPct && peakProgressPct - progressPct >= config.trailingGivebackPct) return { ...result, exit: true, reason: 'TRAILING_STOP' };
+  for (const rule of config.activeEarlyFailureRules || []) {
+    if (heldMinutes >= rule.minimumHeldMinutes && progressPct <= rule.maximumProgressPct && peakProgressPct <= rule.maximumPeakProgressPct) {
+      return { ...result, exit: true, reason: rule.exitReason || 'EARLY_FAILURE_EXIT' };
+    }
+  }
   if (heldMinutes >= timeStopMinutes && peakProgressPct < config.minimumTimeStopProgressPct) return { ...result, exit: true, reason: 'TIME_STOP_NO_MOVEMENT' };
   if (heldMinutes >= config.maximumHoldMinutes) return { ...result, exit: true, reason: 'MAXIMUM_HOLD_TIME' };
   return { ...result, exit: false };

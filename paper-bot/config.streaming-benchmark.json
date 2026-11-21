@@ -1,0 +1,16 @@
+{
+  "signalFile": "../release/Flow-Squeeze-Bot/alerts-bot/data/flow-alert-history.jsonl",
+  "allowedSourceVenues": ["Bybit", "Binance", "OKX", "Bitget"],
+  "quoteNotionalUsd": 800,
+  "pollMilliseconds": 100,
+  "stateWriteMilliseconds": 1000,
+  "hyperliquidStreamShards": 4,
+  "dydxStreamShards": 4,
+  "lighterStreamShards": 2,
+  "prewarmDydxOrderbooks": false,
+  "catalogRefreshSeconds": 60,
+  "denseStreamSeconds": 120,
+  "maxVenueBookAgeMilliseconds": 5000,
+  "observationHorizonsSeconds": [0, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 150, 180, 210, 240, 270, 300, 360, 420, 480, 540, 600, 660, 720, 780, 840, 900, 960, 1020, 1080, 1140, 1200],
+  "retentionDays": 30
+}

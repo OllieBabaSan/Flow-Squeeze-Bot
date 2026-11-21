@@ -1,5 +1,6 @@
 {
   "initialEquityUsd": 1000,
+  "analysisExclusionsFile": "analysis-exclusions.json",
   "riskPerTradePct": 1,
   "maximumNotionalUsd": 800,
   "maximumGrossExposureUsd": 2000,
@@ -24,7 +25,33 @@
   "trailingGivebackPct": 0.75,
   "maximumHoldMinutes": 240,
   "pollSeconds": 15,
+  "positionObservationSeconds": 60,
+  "shadowExitRules": {
+    "fiveMinuteFailure": { "minimumHeldMinutes": 5, "maximumProgressPct": -0.75, "maximumPeakProgressPct": 0.25 },
+    "tenMinuteFailure": { "minimumHeldMinutes": 10, "maximumProgressPct": -0.5, "maximumPeakProgressPct": 0.5 },
+    "failedWinnerGiveback": { "minimumHeldMinutes": 0, "minimumPeakProgressPct": 0.5, "maximumProgressPct": -0.5 }
+  },
+  "exitDesignReplayRules": [
+    { "name": "FAIL_3M_NEG050_PEAK025", "minimumHeldMinutes": 3, "maximumProgressPct": -0.5, "maximumPeakProgressPct": 0.25 },
+    { "name": "FAIL_5M_FLAT_PEAK025", "minimumHeldMinutes": 5, "maximumProgressPct": 0, "maximumPeakProgressPct": 0.25 },
+    { "name": "FAIL_5M_NEG025_PEAK025", "minimumHeldMinutes": 5, "maximumProgressPct": -0.25, "maximumPeakProgressPct": 0.25 },
+    { "name": "FAIL_5M_NEG050_PEAK025", "minimumHeldMinutes": 5, "maximumProgressPct": -0.5, "maximumPeakProgressPct": 0.25 },
+    { "name": "FAIL_5M_NEG075_PEAK025", "minimumHeldMinutes": 5, "maximumProgressPct": -0.75, "maximumPeakProgressPct": 0.25 },
+    { "name": "FAIL_7M_NEG050_PEAK050", "minimumHeldMinutes": 7, "maximumProgressPct": -0.5, "maximumPeakProgressPct": 0.5 },
+    { "name": "FAIL_10M_NEG025_PEAK050", "minimumHeldMinutes": 10, "maximumProgressPct": -0.25, "maximumPeakProgressPct": 0.5 },
+    { "name": "FAIL_10M_NEG050_PEAK050", "minimumHeldMinutes": 10, "maximumProgressPct": -0.5, "maximumPeakProgressPct": 0.5 }
+  ],
+  "strengthShadowRules": {
+    "trailingGivebackVariantsPct": { "050": 0.5, "0625": 0.625 },
+    "partialProfit": { "triggerProgressVariantsPct": [0.75, 1, 1.25, 1.5], "fractionVariants": [0.25, 0.5, 0.75] },
+    "postExitHorizonsMinutes": [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
+  },
   "minimumHyperliquidVolume24hUsd": 10000000,
+  "missedOpportunityShadowRules": {
+    "spreadRecoverySeconds": [30, 60, 120],
+    "adaptiveLiquidityNotionalUsd": [100, 200, 400, 800]
+  },
   "reportingRiskScenariosPct": [0.5, 1, 2],
-  "signalFile": "../alerts-bot/data/flow-alert-history.jsonl"
+  "allowedSourceVenues": ["Bybit", "Hyperliquid", "Kraken"],
+  "signalFile": "../release/Flow-Squeeze-Bot/alerts-bot/data/flow-alert-history.jsonl"
 }

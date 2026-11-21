@@ -1,0 +1,7 @@
+{
+  "extends": "config.v2.bybit.confirmed.json",
+  "validationPhase": "V2R_BYBIT_CONFIRMED",
+  "signalFile": "../release/Flow-Squeeze-Bot/alerts-bot/data/flow-alert-history.jsonl",
+  "sharedMarketCacheFile": "data-v2r-shared-market/cache.json",
+  "sharedMarketCacheMaximumAgeMs": 15000
+}
